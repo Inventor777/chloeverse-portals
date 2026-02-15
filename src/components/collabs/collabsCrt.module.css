@@ -1,0 +1,995 @@
+.collabsStage {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100svh;
+  overflow: hidden;
+  background: #010101;
+  color: #f2f5ff;
+  font-family: var(--font-geist-sans), "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.studioBackdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 86% at 50% 30%, rgba(164, 176, 216, 0.13), rgba(15, 16, 21, 0.1) 38%, rgba(3, 3, 5, 0.94) 76%),
+    linear-gradient(180deg, rgba(4, 4, 6, 0.95) 0%, rgba(0, 0, 0, 0.98) 100%);
+}
+
+.studioSpotlight {
+  position: absolute;
+  left: 50%;
+  top: -14%;
+  width: min(148vmin, 1800px);
+  height: min(100vmin, 1100px);
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at 50% 40%, rgba(211, 222, 255, 0.26), rgba(0, 0, 0, 0) 66%);
+  filter: blur(14px);
+}
+
+.studioDepth {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(68% 52% at 50% 66%, rgba(66, 73, 97, 0.18), rgba(0, 0, 0, 0) 60%),
+    radial-gradient(34% 62% at 4% 48%, rgba(95, 109, 147, 0.12), rgba(0, 0, 0, 0) 74%),
+    radial-gradient(32% 58% at 96% 46%, rgba(122, 102, 92, 0.12), rgba(0, 0, 0, 0) 72%);
+}
+
+.tablePlane {
+  position: absolute;
+  left: -4%;
+  right: -4%;
+  bottom: -15%;
+  height: min(42vh, 330px);
+  pointer-events: none;
+  border-top: 1px solid rgba(176, 189, 230, 0.11);
+  background:
+    linear-gradient(180deg, rgba(28, 29, 33, 0) 0%, rgba(29, 31, 36, 0.46) 34%, rgba(9, 9, 11, 0.96) 100%),
+    radial-gradient(100% 64% at 50% -16%, rgba(190, 206, 255, 0.14), rgba(0, 0, 0, 0) 56%);
+  transform: perspective(1200px) rotateX(74deg);
+  transform-origin: center top;
+}
+
+.sceneGrain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.18;
+  mix-blend-mode: soft-light;
+  background-image:
+    repeating-radial-gradient(circle at 0 0, rgba(255, 255, 255, 0.14) 0 1px, rgba(255, 255, 255, 0) 1px 3px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.04) 0 1px, rgba(0, 0, 0, 0.12) 1px 2px);
+  background-size:
+    3px 3px,
+    100% 2px;
+}
+
+.stageObjects {
+  position: relative;
+  z-index: 3;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: clamp(2.2rem, 4.5vw, 4rem) clamp(1rem, 4.5vw, 4rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.televisionWrap {
+  width: min(84vw, 1240px);
+  max-width: 1240px;
+}
+
+.remoteWrap {
+  position: absolute;
+  right: clamp(0.8rem, 3.4vw, 3.2rem);
+  bottom: clamp(0.8rem, 3.3vh, 2.8rem);
+  width: clamp(220px, 20vw, 300px);
+}
+
+.introCurtain {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  background: #000;
+  opacity: 1;
+  transition: opacity 0.42s ease-out;
+}
+
+.introCurtainHidden {
+  opacity: 0;
+}
+
+.tvSceneObject {
+  position: relative;
+}
+
+.tvDropShadow {
+  position: absolute;
+  left: 50%;
+  bottom: -12%;
+  width: 86%;
+  height: 20%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0) 72%);
+  filter: blur(11px);
+}
+
+.tvBody {
+  position: relative;
+  border-radius: clamp(1.8rem, 4.8vw, 4.4rem);
+  border: 1px solid rgba(235, 241, 255, 0.2);
+  background:
+    linear-gradient(148deg, rgba(250, 253, 255, 0.18) 0%, rgba(68, 72, 88, 0.2) 22%, rgba(18, 20, 25, 0.97) 62%, rgba(8, 9, 11, 1) 100%),
+    linear-gradient(180deg, rgba(34, 36, 43, 0.9) 0%, rgba(11, 11, 13, 0.98) 100%);
+  box-shadow:
+    0 74px 148px rgba(0, 0, 0, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -20px 34px rgba(0, 0, 0, 0.58);
+  padding: clamp(0.8rem, 2.4vw, 1.45rem);
+  transition: opacity 0.3s ease;
+}
+
+.tvBody[data-power="off"] {
+  opacity: 0.94;
+}
+
+.tvShellHighlight {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(168deg, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.07) 21%, rgba(255, 255, 255, 0) 48%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0) 32%);
+}
+
+.tvSurfaceNoise {
+  position: absolute;
+  inset: 1.4%;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.18;
+  background-image:
+    radial-gradient(circle at 18% 32%, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0) 36%),
+    radial-gradient(circle at 78% 38%, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 34%);
+}
+
+.tvFace {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(90px, 11vw, 132px);
+  align-items: stretch;
+  gap: clamp(0.65rem, 1.6vw, 1rem);
+}
+
+.tvBezel {
+  border-radius: clamp(1.1rem, 3vw, 2.5rem);
+  border: 1px solid rgba(228, 238, 255, 0.22);
+  background:
+    linear-gradient(165deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, rgba(7, 9, 13, 0.92), rgba(0, 0, 0, 1));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), inset 0 -20px 34px rgba(0, 0, 0, 0.52);
+  padding: clamp(0.55rem, 1.5vw, 0.9rem);
+}
+
+.tvControls {
+  border-radius: clamp(0.8rem, 2.2vw, 1.35rem);
+  border: 1px solid rgba(224, 230, 247, 0.19);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.54)),
+    linear-gradient(166deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0));
+  padding: clamp(0.6rem, 1.5vw, 0.86rem);
+  display: grid;
+  align-content: center;
+  gap: clamp(0.6rem, 1.3vw, 0.9rem);
+}
+
+.speakerGrill {
+  width: 100%;
+  height: clamp(5rem, 14vw, 8.4rem);
+  border-radius: 0.72rem;
+  border: 1px solid rgba(236, 240, 255, 0.16);
+  background:
+    repeating-radial-gradient(circle at 1px 1px, rgba(10, 12, 16, 0.9) 0 1.2px, rgba(255, 255, 255, 0.11) 1.2px 2px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.42));
+  background-size: 8px 8px, 100% 100%;
+}
+
+.knobGroup {
+  display: grid;
+  gap: 0.58rem;
+}
+
+.knob {
+  width: clamp(2.2rem, 5.2vw, 3.1rem);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  margin-inline: auto;
+  border: 1px solid rgba(239, 244, 255, 0.24);
+  background:
+    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.05) 36%, rgba(0, 0, 0, 0.76) 78%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.5));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 6px 8px rgba(0, 0, 0, 0.36);
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.knob::after {
+  content: "";
+  position: absolute;
+  top: 11%;
+  width: 2px;
+  height: 17%;
+  border-radius: 999px;
+  background: rgba(236, 243, 255, 0.75);
+}
+
+.knob span {
+  margin-top: 62%;
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: 0.44rem;
+  letter-spacing: 0.18em;
+  color: rgba(229, 235, 248, 0.62);
+}
+
+.tvNameplate {
+  margin-top: clamp(0.55rem, 1.4vw, 0.8rem);
+  margin-left: clamp(0.25rem, 0.7vw, 0.5rem);
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(230, 238, 255, 0.22);
+  padding: 0.25rem 0.62rem;
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: clamp(0.48rem, 0.84vw, 0.62rem);
+  letter-spacing: 0.18em;
+  color: rgba(230, 238, 255, 0.66);
+}
+
+.tvFeet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -12px;
+  display: flex;
+  justify-content: space-between;
+  padding-inline: 11%;
+}
+
+.tvFeet span {
+  width: clamp(44px, 8vw, 76px);
+  height: 14px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(75, 79, 92, 0.9), rgba(7, 7, 10, 1));
+  box-shadow: 0 8px 10px rgba(0, 0, 0, 0.44);
+}
+
+.tvReflection {
+  position: absolute;
+  left: 50%;
+  bottom: -14%;
+  width: 74%;
+  height: 16%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(154, 173, 220, 0.14), rgba(0, 0, 0, 0) 70%);
+  filter: blur(12px);
+}
+
+.tvGroundContact {
+  position: absolute;
+  left: 50%;
+  bottom: -8%;
+  width: 68%;
+  height: 8%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0) 72%);
+}
+
+.tvReadyLamp {
+  position: absolute;
+  right: clamp(1rem, 2vw, 1.5rem);
+  bottom: clamp(0.82rem, 1.8vw, 1.2rem);
+  width: 0.46rem;
+  height: 0.46rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: box-shadow 0.24s ease, background-color 0.24s ease;
+}
+
+.tvReadyLamp[data-power="on"] {
+  background: rgba(120, 246, 181, 0.9);
+  box-shadow: 0 0 14px rgba(120, 246, 181, 0.62);
+}
+
+.tvReadyLamp[data-power="off"] {
+  background: rgba(251, 122, 122, 0.5);
+  box-shadow: 0 0 0 rgba(251, 122, 122, 0);
+}
+
+.screenRoot {
+  --channel-primary: #2a6cff;
+  --channel-secondary: #79cdff;
+  --channel-accent: #c2e8ff;
+  position: relative;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: clamp(0.9rem, 2.5vw, 1.75rem);
+  border: 1px solid rgba(188, 212, 255, 0.21);
+  background: #040507;
+  transform: perspective(1300px) rotateX(1.6deg) scale(1.003);
+  transform-origin: center;
+}
+
+.screenRoot[data-live="off"] .screenContent {
+  filter: saturate(0.3) brightness(0.2);
+}
+
+.screenContent {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(72% 72% at 50% 42%, rgba(138, 160, 220, 0.2), rgba(2, 4, 7, 0) 52%),
+    linear-gradient(160deg, color-mix(in srgb, var(--channel-primary) 62%, #090c13), color-mix(in srgb, var(--channel-secondary) 36%, #03050a) 58%, #010102 100%);
+}
+
+.mediaFrame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  object-fit: cover;
+}
+
+.phosphorTint {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(80% 74% at 50% 46%, color-mix(in srgb, var(--channel-accent) 12%, transparent), rgba(0, 0, 0, 0) 60%);
+  mix-blend-mode: screen;
+}
+
+.noSignal {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(60% 54% at 50% 38%, rgba(84, 94, 116, 0.34), rgba(6, 7, 10, 0) 68%),
+    linear-gradient(180deg, rgba(7, 8, 11, 0.9), rgba(0, 0, 0, 1));
+}
+
+.noSignalNoise {
+  position: absolute;
+  inset: -16%;
+  background-image:
+    radial-gradient(circle at 12% 26%, rgba(255, 255, 255, 0.3) 0 1px, rgba(255, 255, 255, 0) 1px 4px),
+    radial-gradient(circle at 74% 42%, rgba(255, 255, 255, 0.22) 0 1px, rgba(255, 255, 255, 0) 1px 3px);
+  background-size:
+    90px 90px,
+    60px 60px;
+  opacity: 0.22;
+  animation: noiseShift 0.28s steps(4) infinite;
+}
+
+.noSignalText {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 0.5rem;
+  text-align: center;
+  text-shadow: 0 8px 20px rgba(0, 0, 0, 0.58);
+}
+
+.noSignalText span {
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: clamp(0.56rem, 1vw, 0.74rem);
+  letter-spacing: 0.2em;
+  color: rgba(203, 212, 234, 0.75);
+}
+
+.noSignalText strong {
+  font-size: clamp(1rem, 2.8vw, 2.3rem);
+  letter-spacing: 0.08em;
+  color: rgba(242, 247, 255, 0.9);
+  font-weight: 600;
+}
+
+.noSignalText small {
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: clamp(0.48rem, 0.9vw, 0.68rem);
+  letter-spacing: 0.24em;
+  color: rgba(208, 218, 245, 0.62);
+}
+
+.scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.17;
+  background: repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0 1px, rgba(0, 0, 0, 0.34) 1px 3px);
+  mix-blend-mode: soft-light;
+  animation: scanlinesDrift 5.5s linear infinite;
+}
+
+.noiseLayer {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  opacity: 0.1;
+  mix-blend-mode: screen;
+  background-image:
+    radial-gradient(circle at 18% 24%, rgba(255, 255, 255, 0.2) 0 1px, rgba(255, 255, 255, 0) 1px 4px),
+    radial-gradient(circle at 70% 76%, rgba(255, 255, 255, 0.2) 0 1px, rgba(255, 255, 255, 0) 1px 3px);
+  background-size:
+    94px 94px,
+    72px 72px;
+  animation: noiseShift 0.35s steps(3) infinite;
+}
+
+.vignetteLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(125% 98% at 50% 42%, rgba(0, 0, 0, 0) 48%, rgba(0, 0, 0, 0.55) 82%, rgba(0, 0, 0, 0.72) 100%);
+}
+
+.glassSpecks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.08;
+  background-image:
+    radial-gradient(circle at 24% 30%, rgba(255, 255, 255, 0.7) 0 1px, rgba(255, 255, 255, 0) 1px 3px),
+    radial-gradient(circle at 72% 18%, rgba(255, 255, 255, 0.62) 0 1px, rgba(255, 255, 255, 0) 1px 3px);
+  background-size:
+    160px 160px,
+    130px 130px;
+}
+
+.glassHighlight {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(130% 100% at 50% -18%, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(168deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.05) 25%, rgba(255, 255, 255, 0) 50%);
+}
+
+.screenGlitching {
+  animation: channelRoll 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.screenGlitching::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 20%, rgba(255, 255, 255, 0.34) 44%, rgba(255, 255, 255, 0) 62%);
+  mix-blend-mode: screen;
+  animation: tearBand 0.26s ease-out;
+}
+
+.screenGlitching .screenContent {
+  animation: chromaSplit 0.3s ease-out;
+}
+
+.screenGlitching .noiseLayer {
+  opacity: 0.42;
+  animation-duration: 0.08s;
+}
+
+.glitchPulseLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  mix-blend-mode: screen;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.22) 70%, rgba(255, 255, 255, 0)),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.16) 0 1px, rgba(0, 0, 0, 0.52) 1px 2px);
+  animation: glitchFlash 0.22s ease-out;
+}
+
+.channelOsd {
+  position: absolute;
+  left: clamp(0.56rem, 1.2vw, 0.95rem);
+  bottom: clamp(0.56rem, 1.2vw, 0.95rem);
+  display: grid;
+  gap: 0.2rem;
+  border-radius: 0.72rem;
+  border: 1px solid rgba(229, 239, 255, 0.38);
+  background: rgba(8, 11, 18, 0.72);
+  padding: 0.4rem 0.55rem;
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  backdrop-filter: blur(4px);
+  animation: osdFade 1.2s ease-out forwards;
+}
+
+.channelOsd div:nth-child(1) {
+  font-size: clamp(0.5rem, 0.82vw, 0.66rem);
+  letter-spacing: 0.2em;
+  color: rgba(215, 228, 255, 0.9);
+}
+
+.channelOsd div:nth-child(2) {
+  font-size: clamp(0.58rem, 1vw, 0.76rem);
+  letter-spacing: 0.08em;
+  color: rgba(245, 250, 255, 0.95);
+}
+
+.channelOsd div:nth-child(3) {
+  font-size: clamp(0.46rem, 0.74vw, 0.58rem);
+  letter-spacing: 0.14em;
+  color: rgba(199, 212, 242, 0.8);
+}
+
+.bootOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+  background: #000;
+}
+
+.bootTrace {
+  width: 8%;
+  height: 2px;
+  border-radius: 999px;
+  opacity: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(231, 241, 255, 0.95), rgba(0, 0, 0, 0)),
+    radial-gradient(circle at center, rgba(157, 205, 255, 0.95), rgba(15, 55, 95, 0.28) 58%, rgba(0, 0, 0, 0) 80%);
+}
+
+.bootOffStage {
+  opacity: 1;
+}
+
+.bootLineStage {
+  opacity: 1;
+}
+
+.bootLineStage .bootTrace {
+  animation: bootLine 0.35s ease-out forwards;
+}
+
+.bootBloomStage {
+  opacity: 1;
+}
+
+.bootBloomStage .bootTrace {
+  animation: bootBloom 0.35s cubic-bezier(0.18, 0.9, 0.2, 1) forwards;
+}
+
+.bootSettleStage {
+  opacity: 1;
+  animation: settleNoise 0.4s ease-out forwards;
+}
+
+.bootSettleStage .bootTrace {
+  opacity: 0;
+}
+
+.bootOnStage {
+  opacity: 0;
+  transition: opacity 0.24s ease-out;
+}
+
+.bootReduced {
+  opacity: 0;
+  transition: opacity 0.28s ease-out;
+}
+
+.remoteObject {
+  position: relative;
+  transform: perspective(900px) rotateX(12deg) rotateZ(-6deg);
+  transform-origin: center bottom;
+}
+
+.remoteShell {
+  position: relative;
+  border-radius: 2.2rem;
+  border: 1px solid rgba(238, 245, 255, 0.22);
+  background:
+    linear-gradient(152deg, rgba(255, 255, 255, 0.18) 0%, rgba(73, 78, 92, 0.16) 22%, rgba(17, 19, 24, 0.98) 100%),
+    linear-gradient(180deg, rgba(37, 39, 47, 0.95) 0%, rgba(8, 9, 12, 0.98) 100%);
+  box-shadow:
+    0 42px 86px rgba(0, 0, 0, 0.74),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -18px 30px rgba(0, 0, 0, 0.52);
+  padding: 0.86rem;
+}
+
+.remoteSpecular {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.06) 20%, rgba(255, 255, 255, 0) 44%);
+}
+
+.remoteEmboss {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.7rem;
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: 0.47rem;
+  letter-spacing: 0.24em;
+  color: rgba(225, 232, 249, 0.34);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+.remoteTopRow {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.72rem;
+}
+
+.remoteButton {
+  border: 1px solid rgba(236, 242, 255, 0.23);
+  border-radius: 0.95rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(16, 19, 24, 0.92)),
+    linear-gradient(156deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0));
+  color: rgba(240, 246, 255, 0.9);
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.15em;
+  line-height: 1;
+  box-shadow:
+    0 8px 12px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.14s ease;
+}
+
+.remoteButton:hover {
+  filter: brightness(1.06);
+}
+
+.remoteButtonPressed {
+  transform: translateY(2px);
+  box-shadow:
+    0 4px 7px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.remotePower {
+  border-radius: 999px;
+  border-color: rgba(255, 162, 162, 0.45);
+  background:
+    linear-gradient(180deg, rgba(255, 170, 170, 0.42), rgba(96, 20, 20, 0.86)),
+    linear-gradient(145deg, rgba(255, 210, 210, 0.32), rgba(255, 255, 255, 0));
+  color: rgba(255, 244, 244, 0.95);
+  padding: 0.58rem 0.82rem;
+}
+
+.remoteLedWrap {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 50%;
+  border: 1px solid rgba(235, 244, 255, 0.16);
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.remoteLed {
+  width: 0.54rem;
+  height: 0.54rem;
+  border-radius: 50%;
+}
+
+.remoteLedOff {
+  background: rgba(231, 107, 107, 0.28);
+  box-shadow: 0 0 0 rgba(231, 107, 107, 0);
+}
+
+.remoteLedIdle {
+  background: rgba(121, 238, 192, 0.92);
+  box-shadow: 0 0 8px rgba(121, 238, 192, 0.42);
+}
+
+.remoteLedPulse {
+  background: rgba(255, 224, 136, 0.95);
+  box-shadow: 0 0 14px rgba(255, 224, 136, 0.58);
+}
+
+.remoteInfo {
+  position: relative;
+  z-index: 1;
+  margin-top: 0.65rem;
+  border-radius: 0.95rem;
+  border: 1px solid rgba(225, 236, 255, 0.21);
+  background:
+    linear-gradient(160deg, rgba(92, 146, 206, 0.24), rgba(16, 24, 36, 0.9) 40%, rgba(6, 9, 14, 0.96) 100%);
+  padding: 0.56rem 0.66rem 0.64rem;
+}
+
+.remoteChannelLabel {
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.2em;
+  color: rgba(205, 225, 255, 0.86);
+}
+
+.remoteTitle {
+  margin-top: 0.28rem;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  color: rgba(245, 250, 255, 0.9);
+}
+
+.remoteVolumeTrack {
+  margin-top: 0.52rem;
+  height: 0.26rem;
+  border-radius: 999px;
+  background: rgba(195, 220, 255, 0.18);
+  overflow: hidden;
+}
+
+.remoteVolumeFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(142, 204, 255, 0.95), rgba(229, 242, 255, 0.86));
+}
+
+.remoteCluster {
+  position: relative;
+  z-index: 1;
+  margin-top: 0.65rem;
+  display: grid;
+  gap: 0.44rem;
+}
+
+.remoteClusterName {
+  text-align: center;
+  font-family: var(--font-geist-mono), "Consolas", "Courier New", monospace;
+  font-size: 0.54rem;
+  letter-spacing: 0.21em;
+  color: rgba(221, 230, 251, 0.56);
+}
+
+.remoteRocker {
+  border-radius: 999px;
+  border: 1px solid rgba(236, 244, 255, 0.19);
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: rgba(9, 12, 18, 0.68);
+}
+
+.remoteHalfButton {
+  border-radius: 0;
+  border: 0;
+  border-right: 1px solid rgba(236, 244, 255, 0.16);
+  padding: 0.74rem 0.5rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+}
+
+.remoteHalfButton:last-child {
+  border-right: 0;
+}
+
+.remoteMute {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  margin-top: 0.66rem;
+  padding: 0.74rem 0.6rem;
+}
+
+@keyframes bootLine {
+  0% {
+    opacity: 0;
+    width: 3%;
+  }
+  100% {
+    opacity: 1;
+    width: 88%;
+  }
+}
+
+@keyframes bootBloom {
+  0% {
+    opacity: 1;
+    width: 88%;
+    height: 2px;
+  }
+  56% {
+    opacity: 1;
+    width: 90%;
+    height: 2px;
+  }
+  100% {
+    opacity: 1;
+    width: 112%;
+    height: 100%;
+    filter: blur(6px);
+  }
+}
+
+@keyframes scanlinesDrift {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes noiseShift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-1.8%, 1.2%, 0);
+  }
+}
+
+@keyframes channelRoll {
+  0% {
+    transform: perspective(1300px) rotateX(1.6deg) scale(1.008) translateY(0);
+  }
+  45% {
+    transform: perspective(1300px) rotateX(1.6deg) scale(1.005) translateY(-0.65%);
+  }
+  100% {
+    transform: perspective(1300px) rotateX(1.6deg) scale(1.003) translateY(0);
+  }
+}
+
+@keyframes tearBand {
+  0% {
+    transform: translateY(-52%);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.72;
+  }
+  100% {
+    transform: translateY(126%);
+    opacity: 0;
+  }
+}
+
+@keyframes chromaSplit {
+  0% {
+    filter: saturate(0.38) contrast(1.2);
+    transform: translateX(0);
+  }
+  40% {
+    filter: saturate(0.5) contrast(1.16);
+    transform: translateX(-1px);
+  }
+  70% {
+    filter: saturate(0.85) contrast(1.07);
+    transform: translateX(1px);
+  }
+  100% {
+    filter: none;
+    transform: translateX(0);
+  }
+}
+
+@keyframes glitchFlash {
+  0% {
+    opacity: 0;
+  }
+  24% {
+    opacity: 0.72;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes settleNoise {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes osdFade {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  18%,
+  55% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (max-width: 1080px) {
+  .televisionWrap {
+    width: min(92vw, 1080px);
+  }
+
+  .remoteWrap {
+    width: clamp(210px, 30vw, 280px);
+    right: clamp(0.7rem, 2vw, 1.2rem);
+    bottom: clamp(0.7rem, 2vh, 1.2rem);
+  }
+
+  .tvFace {
+    grid-template-columns: minmax(0, 1fr) clamp(82px, 12vw, 110px);
+  }
+}
+
+@media (max-width: 760px) {
+  .stageObjects {
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    gap: 1.1rem;
+    padding-top: 3.4rem;
+    padding-bottom: 4.4rem;
+  }
+
+  .televisionWrap {
+    width: min(97vw, 960px);
+  }
+
+  .remoteWrap {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    width: min(78vw, 286px);
+    justify-self: end;
+    transform: translateX(8%);
+  }
+
+  .remoteObject {
+    transform: perspective(900px) rotateX(10deg) rotateZ(-5deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .noiseLayer,
+  .scanlines,
+  .noSignalNoise,
+  .screenGlitching,
+  .screenGlitching::before,
+  .glitchPulseLayer {
+    animation: none !important;
+  }
+
+  .noiseLayer {
+    opacity: 0.04;
+  }
+
+  .scanlines {
+    opacity: 0.1;
+  }
+
+  .remoteButton,
+  .tvBody,
+  .bootOverlay,
+  .introCurtain {
+    transition-duration: 0.01ms !important;
+  }
+}
