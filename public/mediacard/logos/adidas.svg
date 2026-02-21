@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" role="img" aria-labelledby="title">
+  <title>Adidas</title>
+  <rect width="320" height="96" rx="14" fill="#ffffff"/>
+  <g fill="#111111">
+    <rect x="26" y="50" width="24" height="26" transform="skewX(-20)"/>
+    <rect x="58" y="42" width="24" height="34" transform="skewX(-20)"/>
+    <rect x="90" y="34" width="24" height="42" transform="skewX(-20)"/>
+  </g>
+  <text x="230" y="60" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#111111">adidas</text>
+</svg>

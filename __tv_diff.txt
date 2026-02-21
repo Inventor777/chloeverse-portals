@@ -1,0 +1,1322 @@
+diff --git a/src/components/collabs/RetroTv3D.tsx b/src/components/collabs/RetroTv3D.tsx
+index 4ec6669..b9de61b 100644
+--- a/src/components/collabs/RetroTv3D.tsx
++++ b/src/components/collabs/RetroTv3D.tsx
+@@ -31,9 +31,14 @@ type RetroTv3DProps = {
+ type HtmlScreenAnchor = {
+   position: [number, number, number];
+   rotation: [number, number, number];
++  quaternion: [number, number, number, number];
++  normal: [number, number, number];
+   widthPx: number;
+   heightPx: number;
+   scale: number;
++  screenWidth: number;
++  screenHeight: number;
++  screenThickness: number;
+ };
+ 
+ type PreparedTvModel = {
+@@ -44,16 +49,51 @@ type PreparedTvModel = {
+ };
+ 
+ type TvDebugMode = "raw" | "names" | "pick" | "inspect" | null;
++type ScreenRect = { x0: number; x1: number; y0: number; y1: number; depthN: number };
++type StoredScreenFitAnchor = {
++  pos: [number, number, number];
++  quat: [number, number, number, number];
++  width: number;
++  height: number;
++  normal: [number, number, number];
++};
++type StoredScreenFit = {
++  mode: "auto" | "manual";
++  anchor?: StoredScreenFitAnchor;
++};
++type AutoScreenAnchor = {
++  anchorPos: THREE.Vector3;
++  anchorQuat: THREE.Quaternion;
++  screenWidth: number;
++  screenHeight: number;
++  normal: THREE.Vector3;
++  pointsUsed: number;
++};
++type AutoScreenAnchorStats = {
++  hitsTotal: number;
++  hitsFacing: number;
++  hitsCluster: number;
++  reason: string | null;
++};
++type AutoScreenAnchorResult = {
++  anchor: AutoScreenAnchor | null;
++  stats: AutoScreenAnchorStats;
++};
+ 
+ const TV_YAW_STORAGE_KEY = "collabs.tvYawDeg";
+ const TV_HIDDEN_STORAGE_KEY = "collabs.tvHidden";
+ const TV_SCREEN_NAME_STORAGE_KEY = "collabs.tvScreenName";
++const TV_SCREEN_FIT_STORAGE_KEY = "collabs.tvScreenFit.v1";
++const TV_DEBUG_RESET_DONE_KEY = "collabs.tvDebugResetDone";
++const TV_SCREEN_RESET_DONE_KEY = "collabs.tvScreenResetDone";
+ const ALLOWED_YAWS = [0, 90, 180, 270] as const;
+ const RAW_SCALE = 1.6;
+ const TV_HERO_WORLD_HEIGHT = 3.2;
+ const HERO_FILL_FACTOR = 0.88;
+ const CAMERA_Y_OFFSET_FACTOR = 0.05;
+ const TV_CANVAS_HEIGHT = "clamp(560px, 72vh, 880px)";
++const DEFAULT_CAMERA_WORLD = new THREE.Vector3(0, 0.2, 4.6);
++const DEFAULT_SCREEN_RECT: ScreenRect = { x0: 0.07, x1: 0.74, y0: 0.18, y1: 0.8, depthN: 0.004 };
+ let didLogScreenPick = false;
+ let didLogStoredScreenName = false;
+ let didLogRawRender = false;
+@@ -84,6 +124,16 @@ function parseTvDebugMode(raw: string | null | undefined): TvDebugMode {
+   return null;
+ }
+ 
++function parseTvDebugModeFromParams(params: URLSearchParams): TvDebugMode {
++  const fromValue = parseTvDebugMode(params.get("tvDebug"));
++  if (fromValue) return fromValue;
++  if (params.has("tvDebug-pick")) return "pick";
++  if (params.has("tvDebug-inspect")) return "inspect";
++  if (params.has("tvDebug-names")) return "names";
++  if (params.has("tvDebug-raw")) return "raw";
++  return null;
++}
++
+ function parseStoredStringArray(raw: string | null): string[] {
+   if (!raw) return [];
+   try {
+@@ -95,6 +145,97 @@ function parseStoredStringArray(raw: string | null): string[] {
+   }
+ }
+ 
++function clampScalar(value: number, min: number, max: number) {
++  return Math.max(min, Math.min(max, value));
++}
++
++function clampScreenRect(rect: ScreenRect): ScreenRect {
++  let x0 = Math.min(rect.x0, rect.x1);
++  let x1 = Math.max(rect.x0, rect.x1);
++  let y0 = Math.min(rect.y0, rect.y1);
++  let y1 = Math.max(rect.y0, rect.y1);
++
++  x0 = clampScalar(x0, 0, 1);
++  x1 = clampScalar(x1, 0, 1);
++  y0 = clampScalar(y0, 0, 1);
++  y1 = clampScalar(y1, 0, 1);
++
++  if (x1 - x0 < 0.1) {
++    const cx = (x0 + x1) * 0.5;
++    x0 = clampScalar(cx - 0.05, 0, 0.9);
++    x1 = clampScalar(cx + 0.05, 0.1, 1);
++    if (x1 - x0 < 0.1) {
++      x0 = clampScalar(x1 - 0.1, 0, 0.9);
++      x1 = x0 + 0.1;
++    }
++  }
++  if (y1 - y0 < 0.1) {
++    const cy = (y0 + y1) * 0.5;
++    y0 = clampScalar(cy - 0.05, 0, 0.9);
++    y1 = clampScalar(cy + 0.05, 0.1, 1);
++    if (y1 - y0 < 0.1) {
++      y0 = clampScalar(y1 - 0.1, 0, 0.9);
++      y1 = y0 + 0.1;
++    }
++  }
++
++  return {
++    x0,
++    x1,
++    y0,
++    y1,
++    depthN: clampScalar(rect.depthN, -0.05, 0.05),
++  };
++}
++
++function parseStoredScreenFit(raw: string | null): StoredScreenFit | null {
++  if (!raw) return null;
++  try {
++    const parsed = JSON.parse(raw) as Partial<StoredScreenFit>;
++    if (parsed?.mode !== "auto" && parsed?.mode !== "manual") return null;
++    const anchor = parsed.anchor;
++    if (parsed.mode === "auto" && (!anchor || typeof anchor !== "object")) {
++      return { mode: "auto" };
++    }
++    if (!anchor || typeof anchor !== "object") return null;
++    if (
++      !Array.isArray(anchor.pos) || anchor.pos.length !== 3 ||
++      !Array.isArray(anchor.quat) || anchor.quat.length !== 4 ||
++      !Array.isArray(anchor.normal) || anchor.normal.length !== 3
++    ) {
++      return null;
++    }
++    const width = Number(anchor.width);
++    const height = Number(anchor.height);
++    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
++    const pos: [number, number, number] = [Number(anchor.pos[0]), Number(anchor.pos[1]), Number(anchor.pos[2])];
++    const quat: [number, number, number, number] = [
++      Number(anchor.quat[0]),
++      Number(anchor.quat[1]),
++      Number(anchor.quat[2]),
++      Number(anchor.quat[3]),
++    ];
++    const normal: [number, number, number] = [
++      Number(anchor.normal[0]),
++      Number(anchor.normal[1]),
++      Number(anchor.normal[2]),
++    ];
++    if ([...pos, ...quat, ...normal].some((v) => !Number.isFinite(v))) return null;
++    return {
++      mode: parsed.mode,
++      anchor: {
++        pos,
++        quat,
++        width,
++        height,
++        normal,
++      },
++    };
++  } catch {
++    return null;
++  }
++}
++
+ function getWorldBox(object: THREE.Object3D) {
+   object.updateWorldMatrix(true, true);
+   return new THREE.Box3().setFromObject(object);
+@@ -130,121 +271,182 @@ function getSortedAxes(size: THREE.Vector3): [number, number, number] {
+ type ScreenMetrics = {
+   mesh: THREE.Mesh;
+   name: string;
+-  box: THREE.Box3;
+-  w: number;
+-  h: number;
+-  t: number;
+-  aspect: number;
+-  planarity: number;
+-  relArea: number;
+-  frontness: number;
+-  darkness: number;
++  dx: number;
++  dy: number;
++  dz: number;
++  a: number;
++  b: number;
++  c: number;
++  thicknessAxis: "x" | "y" | "z";
++  frontN: number;
++  flatness: number;
+   area: number;
+   score: number;
++  legacyScore: number;
++  plausible: boolean;
+ };
+ 
+-function materialDarkness(material: THREE.Material | THREE.Material[]) {
+-  const materials = toMaterialArray(material);
+-  let darknessTotal = 0;
+-  let count = 0;
+-  for (const mat of materials) {
+-    if ("color" in mat && mat.color instanceof THREE.Color) {
+-      const color = mat.color;
+-      const luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+-      darknessTotal += 1 - luminance;
+-      count += 1;
++function getMeshBoxLocal(root: THREE.Object3D, mesh: THREE.Mesh) {
++  const geometry = mesh.geometry;
++  if (!geometry) return null;
++  if (!geometry.boundingBox) geometry.computeBoundingBox();
++  if (!geometry.boundingBox) return null;
++
++  root.updateWorldMatrix(true, true);
++  const rootInverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
++  const source = geometry.boundingBox;
++  const box = new THREE.Box3();
++  const localCorner = new THREE.Vector3();
++  const worldCorner = new THREE.Vector3();
++  let hasBounds = false;
++
++  for (const x of [source.min.x, source.max.x]) {
++    for (const y of [source.min.y, source.max.y]) {
++      for (const z of [source.min.z, source.max.z]) {
++        localCorner.set(x, y, z);
++        worldCorner.copy(localCorner).applyMatrix4(mesh.matrixWorld).applyMatrix4(rootInverse);
++        if (!hasBounds) {
++          box.min.copy(worldCorner);
++          box.max.copy(worldCorner);
++          hasBounds = true;
++        } else {
++          box.expandByPoint(worldCorner);
++        }
++      }
+     }
+   }
+-  if (count === 0) return 0.35;
+-  return darknessTotal / count;
++
++  return hasBounds ? box : null;
++}
++
++function getDims(box: THREE.Box3) {
++  return box.getSize(new THREE.Vector3());
++}
++
++function classifyDims(size: THREE.Vector3) {
++  const dims = [
++    { axis: "x" as const, value: Math.abs(size.x) },
++    { axis: "y" as const, value: Math.abs(size.y) },
++    { axis: "z" as const, value: Math.abs(size.z) },
++  ].sort((lhs, rhs) => rhs.value - lhs.value);
++  return {
++    a: dims[0].value,
++    b: dims[1].value,
++    c: dims[2].value,
++    thicknessAxis: dims[2].axis,
++  };
+ }
+ 
+-function pickScreenMesh(root: THREE.Object3D, overallBox: THREE.Box3) {
++function getRootLocalMeshBounds(root: THREE.Object3D) {
+   root.updateWorldMatrix(true, true);
+-  const overallSize = overallBox.getSize(new THREE.Vector3());
+-  const overallCenter = overallBox.getCenter(new THREE.Vector3());
+-  const overallAreaMax = Math.max(
+-    1e-6,
+-    overallSize.x * overallSize.y,
+-    overallSize.x * overallSize.z,
+-    overallSize.y * overallSize.z
++  const rootLocalBox = new THREE.Box3();
++  let hasBounds = false;
++
++  root.traverse((object) => {
++    if (!(object instanceof THREE.Mesh) || !object.visible) return;
++    const meshBoxLocal = getMeshBoxLocal(root, object);
++    if (!meshBoxLocal || meshBoxLocal.isEmpty()) return;
++    if (!hasBounds) {
++      rootLocalBox.copy(meshBoxLocal);
++      hasBounds = true;
++      return;
++    }
++    rootLocalBox.union(meshBoxLocal);
++  });
++
++  return hasBounds ? rootLocalBox : null;
++}
++
++function isPlausibleScreen(meshBoxLocal: THREE.Box3, tvBoxLocal: THREE.Box3) {
++  const tvSize = getDims(tvBoxLocal);
++  const candSize = getDims(meshBoxLocal);
++  const { a, b, c } = classifyDims(candSize);
++  const area = a * b;
++  const flatness = c / Math.max(1e-6, b);
++  const candCenter = meshBoxLocal.getCenter(new THREE.Vector3());
++  const frontN = (candCenter.z - tvBoxLocal.min.z) / Math.max(1e-6, tvSize.z);
++  return (
++    a >= 0.45 * Math.max(tvSize.x, tvSize.y) &&
++    b >= 0.25 * Math.min(tvSize.x, tvSize.y) &&
++    area >= 0.12 * (tvSize.x * tvSize.y) &&
++    flatness <= 0.25 &&
++    frontN >= 0.55
+   );
++}
++
++function pickScreenMesh(root: THREE.Object3D, tvBoxLocal: THREE.Box3 | null) {
++  root.updateWorldMatrix(true, true);
++  const allCandidates: ScreenMetrics[] = [];
++  const plausibleCandidates: ScreenMetrics[] = [];
++  const tvSize = tvBoxLocal ? getDims(tvBoxLocal) : null;
+ 
+-  const candidates: ScreenMetrics[] = [];
+   root.traverse((object) => {
+     if (!(object instanceof THREE.Mesh) || !object.visible) return;
+-    const box = getWorldBox(object);
+-    if (box.isEmpty()) return;
+-    const size = box.getSize(new THREE.Vector3());
+-    const [w, h, t] = getSortedAxes(size);
+-    const aspect = w / Math.max(1e-6, h);
+-    const planarity = t / Math.max(1e-6, h);
+-    const area = w * h;
+-    const relArea = area / Math.max(1e-6, overallAreaMax);
+-    const center = box.getCenter(new THREE.Vector3());
+-    const centerDist = Math.hypot(
+-      (center.x - overallCenter.x) / Math.max(1e-6, overallSize.x),
+-      (center.y - overallCenter.y) / Math.max(1e-6, overallSize.y)
+-    );
+-    const frontness = (box.max.z - overallBox.min.z) / Math.max(1e-6, overallSize.z);
+-    const darkness = materialDarkness(object.material);
+-    const aspectFit = 1 / (1 + Math.abs(aspect - 1.6) * 2.0);
+-    const planarFit = 1 / (1 + planarity * 10.0);
+-    const centerFit = 1 / (1 + centerDist * 2.0);
+-    const frontFit = 0.6 + 0.4 * THREE.MathUtils.clamp(frontness, 0, 1);
+-    const darkFit = 0.7 + 0.3 * THREE.MathUtils.clamp(darkness, 0, 1);
+-    const score = area * aspectFit * planarFit * centerFit * frontFit * darkFit;
+-
+-    candidates.push({
++    const meshBoxLocal = getMeshBoxLocal(root, object);
++    if (!meshBoxLocal || meshBoxLocal.isEmpty()) return;
++
++    const candSize = getDims(meshBoxLocal);
++    const dx = Math.abs(candSize.x);
++    const dy = Math.abs(candSize.y);
++    const dz = Math.abs(candSize.z);
++    const { a, b, c, thicknessAxis } = classifyDims(candSize);
++    const area = a * b;
++    const flatness = c / Math.max(1e-6, b);
++    const candCenter = meshBoxLocal.getCenter(new THREE.Vector3());
++    const frontN = tvBoxLocal && tvSize ? (candCenter.z - tvBoxLocal.min.z) / Math.max(1e-6, tvSize.z) : 0;
++    const nameBonus = /screen|crt|display|monitor/i.test(object.name) ? 0.5 : 0;
++    const score = area * (1 + (0.25 - flatness) * 2.0) + nameBonus;
++    const aspect = a / Math.max(1e-6, b);
++    const flatBonus = THREE.MathUtils.clamp((0.25 - flatness) / 0.25, 0, 1);
++    const aspectBonus =
++      aspect >= 1.1 && aspect <= 2.4
++        ? 1
++        : THREE.MathUtils.clamp(1 - Math.min(Math.abs(aspect - 1.1), Math.abs(aspect - 2.4)) / 1.5, 0, 1);
++    const legacyScore = area * (1 + 0.75 * flatBonus) * (0.7 + 0.3 * aspectBonus) + nameBonus;
++    const plausible = tvBoxLocal ? isPlausibleScreen(meshBoxLocal, tvBoxLocal) : false;
++
++    const candidate: ScreenMetrics = {
+       mesh: object,
+       name: object.name || "(unnamed)",
+-      box,
+-      w,
+-      h,
+-      t,
+-      aspect,
+-      planarity,
+-      relArea,
+-      frontness,
+-      darkness,
++      dx,
++      dy,
++      dz,
++      a,
++      b,
++      c,
++      thicknessAxis,
++      frontN,
++      flatness,
+       area,
+       score,
+-    });
++      legacyScore,
++      plausible,
++    };
++    allCandidates.push(candidate);
++    if (plausible) plausibleCandidates.push(candidate);
+   });
+ 
+-  const pickByFilter = (planarityMax: number, relAreaMax: number) => {
+-    let best: ScreenMetrics | null = null;
+-    let bestScore = Number.NEGATIVE_INFINITY;
+-    for (const candidate of candidates) {
+-      const passes =
+-        candidate.planarity < planarityMax &&
+-        candidate.aspect >= 1.1 &&
+-        candidate.aspect <= 2.2 &&
+-        candidate.relArea >= 0.03 &&
+-        candidate.relArea <= relAreaMax &&
+-        candidate.frontness > 0.35;
+-      if (!passes) continue;
+-      if (candidate.score > bestScore) {
+-        best = candidate;
+-        bestScore = candidate.score;
+-      }
+-    }
+-    return best;
+-  };
+-
+-  const bestPrimary = pickByFilter(0.45, 0.8);
+-  const bestRelaxed = bestPrimary ?? pickByFilter(0.7, 0.95);
+-  const bestAny = candidates.reduce<ScreenMetrics | null>((best, candidate) => {
+-    if (!best || candidate.score > best.score) return candidate;
+-    return best;
+-  }, null);
++  const plausibleRanked = plausibleCandidates.sort((lhs, rhs) => rhs.score - lhs.score);
++  const legacyRanked = allCandidates.sort((lhs, rhs) => rhs.legacyScore - lhs.legacyScore);
++  const usedLegacyFallback = plausibleRanked.length === 0;
++  const ranked = usedLegacyFallback ? legacyRanked : plausibleRanked;
+ 
+   return {
+-    best: bestRelaxed ?? bestAny,
+-    ranked: candidates.sort((lhs, rhs) => rhs.score - lhs.score),
++    best: ranked[0] ?? null,
++    ranked,
++    allCandidates,
++    plausibleRanked,
++    legacyRanked,
++    usedLegacyFallback,
+   };
+ }
+ 
++function axisVector(axis: "x" | "y" | "z") {
++  if (axis === "x") return new THREE.Vector3(1, 0, 0);
++  if (axis === "y") return new THREE.Vector3(0, 1, 0);
++  return new THREE.Vector3(0, 0, 1);
++}
++
+ function createHtmlAnchor(root: THREE.Object3D, screenMesh: THREE.Mesh): HtmlScreenAnchor | undefined {
+   const geometry = screenMesh.geometry;
+   if (!geometry.boundingBox) geometry.computeBoundingBox();
+@@ -252,30 +454,346 @@ function createHtmlAnchor(root: THREE.Object3D, screenMesh: THREE.Mesh): HtmlScr
+ 
+   root.updateWorldMatrix(true, true);
+ 
+-  const size = geometry.boundingBox.getSize(new THREE.Vector3());
++  const rawCenter = geometry.boundingBox.getCenter(new THREE.Vector3());
++  const rawSize = geometry.boundingBox.getSize(new THREE.Vector3());
++
+   const rootInverse = new THREE.Matrix4().copy(root.matrixWorld).invert();
+-  const localMatrix = new THREE.Matrix4().multiplyMatrices(rootInverse, screenMesh.matrixWorld);
+-  const position = new THREE.Vector3();
++  const meshRootMatrix = new THREE.Matrix4().multiplyMatrices(rootInverse, screenMesh.matrixWorld);
++  const center = rawCenter.applyMatrix4(meshRootMatrix);
++  const localPosition = new THREE.Vector3();
+   const quaternion = new THREE.Quaternion();
+   const scale = new THREE.Vector3();
+-  localMatrix.decompose(position, quaternion, scale);
++  meshRootMatrix.decompose(localPosition, quaternion, scale);
++  void localPosition;
+ 
+-  const screenWidth = Math.max(0.02, Math.abs(size.x * scale.x) * 0.92);
+-  const screenHeight = Math.max(0.02, Math.abs(size.y * scale.y) * 0.9);
+-  const screenDepth = Math.max(0.001, Math.abs(size.z * scale.z));
+-  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion).normalize();
+-  position.addScaledVector(normal, Math.max(0.0018, screenDepth * 0.55));
++  const dims = [
++    { axis: "x" as const, value: Math.abs(rawSize.x * scale.x) },
++    { axis: "y" as const, value: Math.abs(rawSize.y * scale.y) },
++    { axis: "z" as const, value: Math.abs(rawSize.z * scale.z) },
++  ].sort((a, b) => b.value - a.value);
++
++  const widthDim = dims[0];
++  const heightDim = dims[1];
++  const thicknessDim = dims[2];
++
++  const screenWidth = Math.max(0.02, widthDim.value);
++  const screenHeight = Math.max(0.02, heightDim.value);
++  const screenThickness = Math.max(0.001, thicknessDim.value);
++
++  const normalLocal = axisVector(thicknessDim.axis);
++  const normal = normalLocal.clone().applyQuaternion(quaternion).normalize();
++  center.addScaledVector(normal, Math.max(0.0018, screenThickness * 0.55));
+ 
+   const euler = new THREE.Euler().setFromQuaternion(quaternion, "XYZ");
++
+   const widthPx = 1280;
+-  const heightPx = Math.max(640, Math.round((widthPx * screenHeight) / screenWidth));
++  const heightPx = Math.max(1, Math.round((widthPx * screenHeight) / Math.max(1e-6, screenWidth)));
+ 
++  return {
++    position: [center.x, center.y, center.z],
++    rotation: [euler.x, euler.y, euler.z],
++    quaternion: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
++    normal: [normal.x, normal.y, normal.z],
++    widthPx,
++    heightPx,
++    scale: (screenWidth * 0.92) / widthPx,
++    screenWidth,
++    screenHeight,
++    screenThickness,
++  };
++}
++
++function anchorFromScreenRect(
++  tvBoxLocal: THREE.Box3,
++  cameraWorld: THREE.Vector3,
++  rootObject: THREE.Object3D,
++  rect: ScreenRect
++): HtmlScreenAnchor {
++  rootObject.updateWorldMatrix(true, true);
++  const rootInverse = new THREE.Matrix4().copy(rootObject.matrixWorld).invert();
++  const camLocal = cameraWorld.clone().applyMatrix4(rootInverse);
++
++  const tvCenter = tvBoxLocal.getCenter(new THREE.Vector3());
++  const tvSize = tvBoxLocal.getSize(new THREE.Vector3());
++  const delta = camLocal.sub(tvCenter);
++  const absDelta = new THREE.Vector3(Math.abs(delta.x), Math.abs(delta.y), Math.abs(delta.z));
++
++  let frontAxis: "x" | "y" | "z" = "z";
++  if (absDelta.x >= absDelta.y && absDelta.x >= absDelta.z) frontAxis = "x";
++  else if (absDelta.y >= absDelta.x && absDelta.y >= absDelta.z) frontAxis = "y";
++
++  const frontSign = delta[frontAxis] >= 0 ? 1 : -1;
++  const face = frontSign >= 0 ? tvBoxLocal.max[frontAxis] : tvBoxLocal.min[frontAxis];
++  const axisSize = Math.max(1e-6, tvSize[frontAxis]);
++  const depthPush = rect.depthN * axisSize;
++
++  const xMin = THREE.MathUtils.lerp(tvBoxLocal.min.x, tvBoxLocal.max.x, rect.x0);
++  const xMax = THREE.MathUtils.lerp(tvBoxLocal.min.x, tvBoxLocal.max.x, rect.x1);
++  const yMin = THREE.MathUtils.lerp(tvBoxLocal.min.y, tvBoxLocal.max.y, rect.y0);
++  const yMax = THREE.MathUtils.lerp(tvBoxLocal.min.y, tvBoxLocal.max.y, rect.y1);
++  const width = Math.max(0.02, xMax - xMin);
++  const height = Math.max(0.02, yMax - yMin);
++
++  const position = tvCenter.clone();
++  position.x = (xMin + xMax) * 0.5;
++  position.y = (yMin + yMax) * 0.5;
++  position[frontAxis] = face + frontSign * depthPush;
++
++  let rotation: [number, number, number] = [0, 0, 0];
++  if (frontAxis === "z") {
++    rotation = frontSign >= 0 ? [0, 0, 0] : [0, Math.PI, 0];
++  } else if (frontAxis === "x") {
++    rotation = frontSign >= 0 ? [0, -Math.PI / 2, 0] : [0, Math.PI / 2, 0];
++  } else {
++    rotation = frontSign >= 0 ? [-Math.PI / 2, 0, 0] : [Math.PI / 2, 0, 0];
++  }
++  const quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2], "XYZ"));
++  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion).normalize();
++
++  const widthPx = 1280;
++  const heightPx = Math.max(640, Math.round((widthPx * height) / Math.max(1e-6, width)));
++  return {
++    position: [position.x, position.y, position.z],
++    rotation,
++    quaternion: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
++    normal: [normal.x, normal.y, normal.z],
++    widthPx,
++    heightPx,
++    scale: (width * 0.92) / widthPx,
++    screenWidth: width,
++    screenHeight: height,
++    screenThickness: Math.max(0.001, Math.abs(depthPush)),
++  };
++}
++
++function htmlAnchorFromPose(
++  position: THREE.Vector3,
++  quaternion: THREE.Quaternion,
++  normal: THREE.Vector3,
++  screenWidth: number,
++  screenHeight: number,
++  widthPx = 1440
++): HtmlScreenAnchor {
++  const euler = new THREE.Euler().setFromQuaternion(quaternion, "XYZ");
++  const heightPx = Math.max(720, Math.round((widthPx * screenHeight) / Math.max(1e-6, screenWidth)));
+   return {
+     position: [position.x, position.y, position.z],
+     rotation: [euler.x, euler.y, euler.z],
++    quaternion: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
++    normal: [normal.x, normal.y, normal.z],
+     widthPx,
+     heightPx,
+-    scale: screenWidth / widthPx,
++    scale: (screenWidth * 0.94) / widthPx,
++    screenWidth,
++    screenHeight,
++    screenThickness: 0.001,
++  };
++}
++
++function htmlAnchorFromStoredFit(stored: StoredScreenFitAnchor | null | undefined): HtmlScreenAnchor | null {
++  if (!stored) return null;
++  const position = new THREE.Vector3(stored.pos[0], stored.pos[1], stored.pos[2]);
++  const quaternion = new THREE.Quaternion(stored.quat[0], stored.quat[1], stored.quat[2], stored.quat[3]).normalize();
++  const normal = new THREE.Vector3(stored.normal[0], stored.normal[1], stored.normal[2]).normalize();
++  if (normal.lengthSq() < 1e-8) normal.set(0, 0, 1).applyQuaternion(quaternion).normalize();
++  return htmlAnchorFromPose(position, quaternion, normal, Math.max(0.02, stored.width), Math.max(0.02, stored.height), 1440);
++}
++
++function computeAutoScreenAnchor(
++  tvGroup: THREE.Object3D,
++  camera: THREE.Camera,
++  nx = 60,
++  ny = 40
++): AutoScreenAnchorResult {
++  const stats: AutoScreenAnchorStats = {
++    hitsTotal: 0,
++    hitsFacing: 0,
++    hitsCluster: 0,
++    reason: null,
++  };
++
++  tvGroup.updateWorldMatrix(true, true);
++  const tvBoxWorld = new THREE.Box3().setFromObject(tvGroup);
++  if (tvBoxWorld.isEmpty()) {
++    stats.reason = "tv-box-empty";
++    return { anchor: null, stats };
++  }
++
++  const corners: THREE.Vector3[] = [];
++  for (const x of [tvBoxWorld.min.x, tvBoxWorld.max.x]) {
++    for (const y of [tvBoxWorld.min.y, tvBoxWorld.max.y]) {
++      for (const z of [tvBoxWorld.min.z, tvBoxWorld.max.z]) {
++        corners.push(new THREE.Vector3(x, y, z));
++      }
++    }
++  }
++
++  let ndcMinX = Infinity;
++  let ndcMaxX = -Infinity;
++  let ndcMinY = Infinity;
++  let ndcMaxY = -Infinity;
++  for (const corner of corners) {
++    const p = corner.clone().project(camera);
++    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
++    ndcMinX = Math.min(ndcMinX, p.x);
++    ndcMaxX = Math.max(ndcMaxX, p.x);
++    ndcMinY = Math.min(ndcMinY, p.y);
++    ndcMaxY = Math.max(ndcMaxY, p.y);
++  }
++  if (!Number.isFinite(ndcMinX) || !Number.isFinite(ndcMaxX) || !Number.isFinite(ndcMinY) || !Number.isFinite(ndcMaxY)) {
++    stats.reason = "ndc-projection-invalid";
++    return { anchor: null, stats };
++  }
++  ndcMinX = clampScalar(ndcMinX, -1, 1);
++  ndcMaxX = clampScalar(ndcMaxX, -1, 1);
++  ndcMinY = clampScalar(ndcMinY, -1, 1);
++  ndcMaxY = clampScalar(ndcMaxY, -1, 1);
++  if (ndcMaxX - ndcMinX < 0.05 || ndcMaxY - ndcMinY < 0.05) {
++    stats.reason = "ndc-box-too-small";
++    return { anchor: null, stats };
++  }
++
++  type HitSample = { pointWorld: THREE.Vector3; normalWorld: THREE.Vector3; distance: number; objectName: string };
++  const raycaster = new THREE.Raycaster();
++  const facingHits: HitSample[] = [];
++  const ndc = new THREE.Vector2();
++  const normalMatrix = new THREE.Matrix3();
++
++  for (let iy = 0; iy < ny; iy++) {
++    for (let ix = 0; ix < nx; ix++) {
++      const tx = (ix + 0.5) / nx;
++      const ty = (iy + 0.5) / ny;
++      ndc.set(
++        THREE.MathUtils.lerp(ndcMinX, ndcMaxX, tx),
++        THREE.MathUtils.lerp(ndcMinY, ndcMaxY, ty)
++      );
++      raycaster.setFromCamera(ndc, camera);
++      const hits = raycaster.intersectObject(tvGroup, true);
++      if (hits.length === 0) continue;
++      const first = hits[0];
++      stats.hitsTotal += 1;
++      if (!(first.object instanceof THREE.Mesh) || !first.object.visible) continue;
++      if (!first.face) continue;
++
++      normalMatrix.getNormalMatrix(first.object.matrixWorld);
++      const normalWorld = first.face.normal.clone().applyMatrix3(normalMatrix).normalize();
++      if (normalWorld.dot(raycaster.ray.direction) > -0.25) continue;
++
++      facingHits.push({
++        pointWorld: first.point.clone(),
++        normalWorld,
++        distance: first.distance,
++        objectName: first.object.name || "(unnamed)",
++      });
++    }
++  }
++  stats.hitsFacing = facingHits.length;
++  if (facingHits.length < 24) {
++    stats.reason = "not-enough-facing-hits";
++    return { anchor: null, stats };
++  }
++
++  let minDist = Infinity;
++  let maxDist = -Infinity;
++  for (const hit of facingHits) {
++    minDist = Math.min(minDist, hit.distance);
++    maxDist = Math.max(maxDist, hit.distance);
++  }
++  const range = maxDist - minDist;
++  let cluster: HitSample[] = facingHits;
++  if (range > 1e-5) {
++    const bins = 30;
++    const binWidth = Math.max(1e-6, range / bins);
++    const counts = new Array<number>(bins).fill(0);
++    for (const hit of facingHits) {
++      const idx = clampScalar(Math.floor((hit.distance - minDist) / binWidth), 0, bins - 1);
++      counts[idx] += 1;
++    }
++    let bestBin = 0;
++    for (let i = 1; i < bins; i++) {
++      if (counts[i] > counts[bestBin]) bestBin = i;
++    }
++    const binCenter = minDist + (bestBin + 0.5) * binWidth;
++    cluster = facingHits.filter((hit) => Math.abs(hit.distance - binCenter) <= binWidth * 0.5 + 1e-6);
++  }
++  stats.hitsCluster = cluster.length;
++  if (cluster.length < 20) {
++    stats.reason = "cluster-too-small";
++    return { anchor: null, stats };
++  }
++
++  const centroidWorld = new THREE.Vector3();
++  const avgNormalWorld = new THREE.Vector3();
++  for (const hit of cluster) {
++    centroidWorld.add(hit.pointWorld);
++    avgNormalWorld.add(hit.normalWorld);
++  }
++  centroidWorld.multiplyScalar(1 / cluster.length);
++  if (avgNormalWorld.lengthSq() < 1e-8) {
++    stats.reason = "normal-fit-failed";
++    return { anchor: null, stats };
++  }
++  avgNormalWorld.normalize();
++
++  const refAxis = Math.abs(avgNormalWorld.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
++  const uWorld = new THREE.Vector3().crossVectors(refAxis, avgNormalWorld).normalize();
++  if (uWorld.lengthSq() < 1e-8) {
++    stats.reason = "u-axis-fit-failed";
++    return { anchor: null, stats };
++  }
++  const vWorld = new THREE.Vector3().crossVectors(avgNormalWorld, uWorld).normalize();
++
++  let minDx = Infinity;
++  let maxDx = -Infinity;
++  let minDy = Infinity;
++  let maxDy = -Infinity;
++  for (const hit of cluster) {
++    const delta = hit.pointWorld.clone().sub(centroidWorld);
++    const dx = delta.dot(uWorld);
++    const dy = delta.dot(vWorld);
++    minDx = Math.min(minDx, dx);
++    maxDx = Math.max(maxDx, dx);
++    minDy = Math.min(minDy, dy);
++    maxDy = Math.max(maxDy, dy);
++  }
++  const screenWidthWorld = maxDx - minDx;
++  const screenHeightWorld = maxDy - minDy;
++  const tvSizeWorld = tvBoxWorld.getSize(new THREE.Vector3());
++  if (
++    screenWidthWorld < 0.35 * Math.max(1e-6, tvSizeWorld.x) ||
++    screenHeightWorld < 0.2 * Math.max(1e-6, tvSizeWorld.y)
++  ) {
++    stats.reason = "screen-fit-too-small";
++    return { anchor: null, stats };
++  }
++
++  const basisWorld = new THREE.Matrix4().makeBasis(uWorld, vWorld, avgNormalWorld);
++  const quatWorld = new THREE.Quaternion().setFromRotationMatrix(basisWorld);
++  const rootWorldQuat = tvGroup.getWorldQuaternion(new THREE.Quaternion());
++  const quatLocal = rootWorldQuat.clone().invert().multiply(quatWorld).normalize();
++  const rootInverseWorld = new THREE.Matrix4().copy(tvGroup.matrixWorld).invert();
++
++  const centroidLocal = centroidWorld.clone().applyMatrix4(rootInverseWorld);
++  const widthPlusLocal = centroidWorld.clone().addScaledVector(uWorld, screenWidthWorld * 0.5).applyMatrix4(rootInverseWorld);
++  const widthMinusLocal = centroidWorld.clone().addScaledVector(uWorld, -screenWidthWorld * 0.5).applyMatrix4(rootInverseWorld);
++  const heightPlusLocal = centroidWorld.clone().addScaledVector(vWorld, screenHeightWorld * 0.5).applyMatrix4(rootInverseWorld);
++  const heightMinusLocal = centroidWorld.clone().addScaledVector(vWorld, -screenHeightWorld * 0.5).applyMatrix4(rootInverseWorld);
++  const screenWidthLocal = widthPlusLocal.distanceTo(widthMinusLocal);
++  const screenHeightLocal = heightPlusLocal.distanceTo(heightMinusLocal);
++
++  const normalLocal = avgNormalWorld.clone().transformDirection(rootInverseWorld).normalize();
++  const anchorPosLocal = centroidLocal.addScaledVector(normalLocal, 0.0025);
++
++  return {
++    anchor: {
++      anchorPos: anchorPosLocal,
++      anchorQuat: quatLocal,
++      screenWidth: screenWidthLocal,
++      screenHeight: screenHeightLocal,
++      normal: normalLocal,
++      pointsUsed: cluster.length,
++    },
++    stats,
+   };
+ }
+ 
+@@ -283,13 +801,13 @@ function prepareTvModel(
+   sourceScene: THREE.Group,
+   yawDeg = 0,
+   debugMode: TvDebugMode = null,
+-  hiddenNames: ReadonlySet<string> = new Set<string>()
++  hiddenNames: ReadonlySet<string> = new Set<string>(),
++  cameraWorld: THREE.Vector3 = DEFAULT_CAMERA_WORLD
+ ): PreparedTvModel {
+   const cloned = sourceScene.clone(true);
+   const debugRaw = debugMode === "raw";
+   const debugInspect = debugMode === "inspect";
+   const debugRawLike = debugRaw || debugInspect;
+-  const debugNames = debugMode === "names";
+   const debugPick = debugMode === "pick";
+ 
+   if (!debugRaw && hiddenNames.size > 0) {
+@@ -298,176 +816,20 @@ function prepareTvModel(
+       if (hiddenNames.has(object.name)) object.visible = false;
+     });
+   }
+-
+-  let screenPick: ScreenMetrics | null = null;
+-  let ranked: ScreenMetrics[] = [];
+-  let htmlScreenMesh: THREE.Mesh | null = null;
+-
+-  if (!debugRawLike) {
+-    const overallBox = getWorldBox(cloned);
+-    const pickResult = pickScreenMesh(cloned, overallBox);
+-    screenPick = pickResult.best ?? null;
+-    ranked = pickResult.ranked;
+-    htmlScreenMesh = screenPick?.mesh ?? null;
+-  }
+-
+-  if (debugNames && ranked.length > 0) {
+-    const tableRows: Array<{
+-      name: string;
+-      x: number;
+-      y: number;
+-      z: number;
+-      planarity: number;
+-      relArea: number;
+-      frontness: number;
+-      faceArea: number;
+-    }> = [];
+-    for (const metrics of ranked.slice(0, 40)) {
+-      tableRows.push({
+-        name: metrics.name,
+-        x: metrics.w,
+-        y: metrics.h,
+-        z: metrics.t,
+-        planarity: metrics.planarity,
+-        relArea: metrics.relArea,
+-        frontness: metrics.frontness,
+-        faceArea: metrics.area,
+-      });
+-    }
+-    console.table(
+-      tableRows.map((row) => ({
+-        name: row.name,
+-        x: Number(row.x.toFixed(4)),
+-        y: Number(row.y.toFixed(4)),
+-        z: Number(row.z.toFixed(4)),
+-        planarity: Number(row.planarity.toFixed(4)),
+-        relArea: Number(row.relArea.toFixed(4)),
+-        frontness: Number(row.frontness.toFixed(4)),
+-      }))
+-    );
+-  }
+-
+-  if (debugPick && ranked.length > 0) {
+-    console.table(
+-      ranked.slice(0, 25).map((candidate) => ({
+-        name: candidate.name,
+-        aspect: Number(candidate.aspect.toFixed(4)),
+-        planarity: Number(candidate.planarity.toFixed(4)),
+-        relArea: Number(candidate.relArea.toFixed(4)),
+-        frontness: Number(candidate.frontness.toFixed(4)),
+-        darkness: Number(candidate.darkness.toFixed(4)),
+-        area: Number(candidate.area.toFixed(6)),
+-        score: Number(candidate.score.toFixed(6)),
+-      }))
+-    );
+-  }
+-
+-  if (!debugRawLike && htmlScreenMesh) {
+-    const screenQuaternion = new THREE.Quaternion();
+-    const forwardNormal = new THREE.Vector3(0, 0, 1);
+-    const screenUp = new THREE.Vector3(0, 1, 0);
+-
+-    cloned.updateWorldMatrix(true, true);
+-    htmlScreenMesh.getWorldQuaternion(screenQuaternion);
+-    forwardNormal.applyQuaternion(screenQuaternion).normalize();
+-
+-    if (forwardNormal.z < 0) {
+-      cloned.rotateY(Math.PI);
+-      cloned.updateWorldMatrix(true, true);
+-    }
+-
+-    htmlScreenMesh.getWorldQuaternion(screenQuaternion);
+-    screenUp.applyQuaternion(screenQuaternion).normalize();
+-
+-    const rollAngle = Math.atan2(screenUp.x, screenUp.y);
+-    if (Math.abs(rollAngle) > 1e-6) {
+-      cloned.rotateZ(-rollAngle);
+-      cloned.updateWorldMatrix(true, true);
++  const tvBoxLocal = !debugRaw ? getRootLocalMeshBounds(cloned) : null;
++  let htmlAnchor: HtmlScreenAnchor | undefined;
++  if (!debugRaw && tvBoxLocal) {
++    htmlAnchor = anchorFromScreenRect(tvBoxLocal, cameraWorld, cloned, DEFAULT_SCREEN_RECT);
++    if (debugPick || debugInspect) {
++      console.log("[RetroTv3D] anchor source=fallback-rect");
+     }
+   }
+ 
+-  if (!debugRawLike && !didLogScreenPick) {
+-    const pickedName = htmlScreenMesh?.name ?? "(none)";
+-    console.log(
+-      "[RetroTv3D] screenPick=",
+-      pickedName,
+-      "planarity=",
+-      screenPick?.planarity ?? -1,
+-      "relArea=",
+-      screenPick?.relArea ?? -1,
+-      "frontness=",
+-      screenPick?.frontness ?? -1,
+-      "aspect=",
+-      screenPick?.aspect ?? -1,
+-      "dark=",
+-      screenPick?.darkness ?? -1
+-    );
+-    didLogScreenPick = true;
+-  }
+-
+   if (!debugRawLike && yawDeg !== 0) {
+     cloned.rotation.y += (yawDeg * Math.PI) / 180;
+     cloned.updateWorldMatrix(true, true);
+   }
+ 
+-  let bestOccluder: THREE.Mesh | null = null;
+-  let bestOccluderScore = 0;
+-  let bestOccluderOverlapXY = 0;
+-  let bestOccluderPlanarity = 0;
+-  let bestOccluderName = "(none)";
+-  if (!debugRawLike && htmlScreenMesh) {
+-    const overallBox = getWorldBox(cloned);
+-    const screenBox = getWorldBox(htmlScreenMesh);
+-    if (!screenBox.isEmpty()) {
+-      const screenDiag = screenBox.getSize(new THREE.Vector3()).length();
+-      screenBox.expandByVector(new THREE.Vector3(screenDiag * 0.04, screenDiag * 0.04, 0));
+-      const screenPrism = screenBox.clone();
+-      screenPrism.min.z = overallBox.min.z;
+-      screenPrism.max.z = overallBox.max.z;
+-
+-      const meshBox = new THREE.Box3();
+-      const intersection = new THREE.Box3();
+-      const meshSize = new THREE.Vector3();
+-      const intersectionSize = new THREE.Vector3();
+-
+-      cloned.traverse((object) => {
+-        if (!(object instanceof THREE.Mesh) || object === htmlScreenMesh || !object.visible) return;
+-        meshBox.setFromObject(object);
+-        if (meshBox.isEmpty()) return;
+-        intersection.copy(meshBox).intersect(screenPrism);
+-        if (intersection.isEmpty()) return;
+-        const overlapSize = intersection.getSize(intersectionSize);
+-        const overlapAreaXY = overlapSize.x * overlapSize.y;
+-        if (overlapAreaXY <= 1e-5) return;
+-        const meshBoxSize = meshBox.getSize(meshSize);
+-        const [, mh, mt] = getSortedAxes(meshBoxSize);
+-        const mPlan = mt / Math.max(1e-6, mh);
+-        const score = overlapAreaXY * (1 / (0.15 + mPlan));
+-        if (score > bestOccluderScore) {
+-          bestOccluderScore = score;
+-          bestOccluderOverlapXY = overlapAreaXY;
+-          bestOccluderPlanarity = mPlan;
+-          bestOccluder = object;
+-          bestOccluderName = object.name || "(unnamed)";
+-        }
+-      });
+-    }
+-  }
+-
+-  if (bestOccluder && bestOccluderOverlapXY > 1e-5) {
+-    bestOccluder.visible = false;
+-  }
+-  if (!debugRawLike) {
+-    console.log(
+-      "[RetroTv3D] hidOccluder=",
+-      bestOccluderName,
+-      "overlapXY=",
+-      bestOccluderOverlapXY,
+-      "mPlan=",
+-      bestOccluderPlanarity
+-    );
+-  }
+-
+   cloned.updateWorldMatrix(true, true);
+   cloned.traverse((object) => {
+     if (debugRawLike || !(object instanceof THREE.Mesh) || !object.visible) return;
+@@ -500,7 +862,9 @@ function prepareTvModel(
+   const size = bounds.getSize(new THREE.Vector3());
+   const fitScale = TV_HERO_WORLD_HEIGHT / Math.max(0.001, size.y);
+ 
+-  const htmlAnchor = !debugRawLike && htmlScreenMesh ? createHtmlAnchor(cloned, htmlScreenMesh) : undefined;
++  if (!htmlAnchor && !debugRawLike && tvBoxLocal) {
++    htmlAnchor = anchorFromScreenRect(tvBoxLocal, cameraWorld, cloned, DEFAULT_SCREEN_RECT);
++  }
+ 
+   return {
+     scene: cloned,
+@@ -513,6 +877,9 @@ function prepareTvModel(
+ type RetroTvSceneProps = {
+   model: PreparedTvModel;
+   screen: ReactNode;
++  debugMode: TvDebugMode;
++  screenFit: StoredScreenFit | null;
++  screenPowered: boolean;
+   rawRender: boolean;
+   debugRawLike: boolean;
+   reducedMotion: boolean;
+@@ -658,6 +1025,9 @@ function RetroTvNormalCameraAutoFrame({
+ function RetroTvScene({
+   model,
+   screen,
++  debugMode,
++  screenFit,
++  screenPowered,
+   rawRender,
+   debugRawLike,
+   reducedMotion,
+@@ -669,6 +1039,107 @@ function RetroTvScene({
+   onModelPointerDown,
+ }: RetroTvSceneProps) {
+   const parallaxRef = useRef<THREE.Group>(null);
++  const { camera, size } = useThree();
++  const [autoAnchor, setAutoAnchor] = useState<HtmlScreenAnchor | null>(null);
++  const isDebugFitMode = debugMode === "pick" || debugMode === "inspect";
++  const manualAnchor = useMemo(
++    () => (screenFit?.mode === "manual" ? htmlAnchorFromStoredFit(screenFit.anchor) : null),
++    [screenFit]
++  );
++  const resolvedAnchor = manualAnchor ?? autoAnchor ?? model.htmlAnchor ?? null;
++  const showDebugScreenOverlay = isDebugFitMode && !!resolvedAnchor;
++
++  useEffect(() => {
++    if (!isDebugFitMode) return;
++    const source = manualAnchor ? "manual" : autoAnchor ? "auto" : model.htmlAnchor ? "fallback" : "none";
++    console.log("[RetroTv3D] screenFit source=", source);
++  }, [autoAnchor, isDebugFitMode, manualAnchor, model.htmlAnchor]);
++
++  useEffect(() => {
++    if (rawRender) return;
++    if (screenFit?.mode === "manual") {
++      setAutoAnchor(null);
++      return;
++    }
++
++    let cancelled = false;
++    let raf1 = 0;
++    let raf2 = 0;
++    const runFit = () => {
++      if (cancelled) return;
++      const tvRoot = tvModelRootRef.current;
++      if (!tvRoot) return;
++      const result = computeAutoScreenAnchor(tvRoot, camera, 60, 40);
++      if (!result.anchor) {
++        setAutoAnchor(null);
++        if (isDebugFitMode) {
++          console.log(
++            `[RetroTv3D] screenFit=auto failed reason=${result.stats.reason ?? "unknown"} hitsTotal=${result.stats.hitsTotal} hitsFacing=${result.stats.hitsFacing} hitsCluster=${result.stats.hitsCluster}`
++          );
++        }
++        return;
++      }
++      const fitted = htmlAnchorFromPose(
++        result.anchor.anchorPos,
++        result.anchor.anchorQuat,
++        result.anchor.normal,
++        result.anchor.screenWidth,
++        result.anchor.screenHeight,
++        1440
++      );
++      setAutoAnchor(fitted);
++      if (isDebugFitMode) {
++        console.log(
++          `[RetroTv3D] screenFit=auto pointsUsed=${result.anchor.pointsUsed} widthLocal=${result.anchor.screenWidth.toFixed(4)} heightLocal=${result.anchor.screenHeight.toFixed(4)}`
++        );
++      }
++    };
++
++    raf1 = requestAnimationFrame(() => {
++      raf2 = requestAnimationFrame(runFit);
++    });
++    return () => {
++      cancelled = true;
++      if (raf1) cancelAnimationFrame(raf1);
++      if (raf2) cancelAnimationFrame(raf2);
++    };
++  }, [camera, size.height, size.width, isDebugFitMode, model.scene, rawRender, screenFit?.mode, tvModelRootRef]);
++
++  const glassGeometry = useMemo(() => {
++    if (!resolvedAnchor) return null;
++    const w = Math.max(0.02, resolvedAnchor.screenWidth * 0.98);
++    const h = Math.max(0.02, resolvedAnchor.screenHeight * 0.98);
++    const geometry = new THREE.PlaneGeometry(w, h, 32, 32);
++    const k = 0.012 * Math.min(w, h);
++    const position = geometry.attributes.position as THREE.BufferAttribute;
++    for (let i = 0; i < position.count; i++) {
++      const x = position.getX(i);
++      const y = position.getY(i);
++      const nx = x / Math.max(1e-6, w * 0.5);
++      const ny = y / Math.max(1e-6, h * 0.5);
++      const bulge = Math.max(0, 1 - nx * nx) * Math.max(0, 1 - ny * ny);
++      position.setZ(i, k * bulge);
++    }
++    position.needsUpdate = true;
++    geometry.computeVertexNormals();
++    return geometry;
++  }, [resolvedAnchor]);
++
++  useEffect(() => {
++    return () => {
++      if (glassGeometry) glassGeometry.dispose();
++    };
++  }, [glassGeometry]);
++
++  const glassPosition = useMemo<[number, number, number] | null>(() => {
++    if (!resolvedAnchor) return null;
++    const normal = new THREE.Vector3(...resolvedAnchor.normal).normalize();
++    return [
++      resolvedAnchor.position[0] + normal.x * 0.0035,
++      resolvedAnchor.position[1] + normal.y * 0.0035,
++      resolvedAnchor.position[2] + normal.z * 0.0035,
++    ];
++  }, [resolvedAnchor]);
+ 
+   useFrame((state, delta) => {
+     if (debugRawLike) return;
+@@ -739,22 +1210,69 @@ function RetroTvScene({
+ 
+         </group>
+         <group position={model.offset} scale={model.fitScale}>
+-          {!debugRawLike && model.htmlAnchor ? (
++          {!debugRawLike && resolvedAnchor ? (
++            <>
++              {glassGeometry && glassPosition ? (
++                <mesh
++                  geometry={glassGeometry}
++                  position={glassPosition}
++                  rotation={resolvedAnchor.rotation}
++                  renderOrder={4}
++                >
++                  <meshPhysicalMaterial
++                    color="#0a0b10"
++                    transmission={0.35}
++                    transparent
++                    opacity={0.35}
++                    roughness={0.25}
++                    metalness={0}
++                    ior={1.4}
++                    thickness={0.3}
++                    clearcoat={1}
++                    clearcoatRoughness={0.12}
++                    emissive="#0b1020"
++                    emissiveIntensity={screenPowered ? 0.18 : 0.08}
++                    depthWrite={false}
++                    side={THREE.DoubleSide}
++                  />
++                </mesh>
++              ) : null}
++            </>
++          ) : null}
++
++          {!debugRawLike && resolvedAnchor ? (
+             <Html
+               transform
+-              position={model.htmlAnchor.position}
+-              rotation={model.htmlAnchor.rotation}
+-              scale={model.htmlAnchor.scale}
++              position={resolvedAnchor.position}
++              rotation={resolvedAnchor.rotation}
++              scale={resolvedAnchor.scale}
+               className={styles.tvHtmlScreenHost}
+               style={{
+-                width: `${model.htmlAnchor.widthPx}px`,
+-                height: `${model.htmlAnchor.heightPx}px`,
++                width: `${resolvedAnchor.widthPx}px`,
++                height: `${resolvedAnchor.heightPx}px`,
+                 pointerEvents: "auto",
+               }}
+             >
+               <div className={styles.tvHtmlScreenInset}>{screen}</div>
+             </Html>
+           ) : null}
++          {showDebugScreenOverlay && resolvedAnchor ? (
++            <mesh
++              position={resolvedAnchor.position}
++              rotation={resolvedAnchor.rotation}
++              renderOrder={5}
++            >
++              <planeGeometry args={[resolvedAnchor.screenWidth, resolvedAnchor.screenHeight]} />
++              <meshBasicMaterial
++                color="#7fffd4"
++                wireframe
++                transparent
++                opacity={0.38}
++                depthWrite={false}
++                side={THREE.DoubleSide}
++              />
++            </mesh>
++          ) : null}
+         </group>
+ 
+         {!debugRawLike ? (
+@@ -800,13 +1318,18 @@ function RetroTv3DLoaded({
+   const [debugMode] = useState<TvDebugMode>(() => {
+     if (rawRender) return null;
+     if (typeof window === "undefined") return null;
+-    return parseTvDebugMode(new URLSearchParams(window.location.search).get("tvDebug"));
++    return parseTvDebugModeFromParams(new URLSearchParams(window.location.search));
+   });
+   const [hiddenNames] = useState<string[]>(() => {
+     if (rawRender) return [];
+     if (typeof window === "undefined") return [];
+     return Array.from(new Set(parseStoredStringArray(window.localStorage.getItem(TV_HIDDEN_STORAGE_KEY))));
+   });
++  const [storedScreenFit] = useState<StoredScreenFit | null>(() => {
++    if (rawRender) return null;
++    if (typeof window === "undefined") return null;
++    return parseStoredScreenFit(window.localStorage.getItem(TV_SCREEN_FIT_STORAGE_KEY));
++  });
+   const hiddenNamesSet = useMemo(() => new Set(hiddenNames), [hiddenNames]);
+   const gltf = useGLTF("/models/retro_tv.glb");
+   const debugRaw = debugMode === "raw";
+@@ -820,7 +1343,8 @@ function RetroTv3DLoaded({
+         gltf.scene,
+         effectiveDebugRawLike ? 0 : yawDeg,
+         effectiveDebugMode,
+-        rawRender ? new Set<string>() : hiddenNamesSet
++        rawRender ? new Set<string>() : hiddenNamesSet,
++        DEFAULT_CAMERA_WORLD
+       ),
+     [gltf.scene, yawDeg, effectiveDebugMode, effectiveDebugRawLike, rawRender, hiddenNamesSet]
+   );
+@@ -897,7 +1421,7 @@ function RetroTv3DLoaded({
+     console.log("[TV] hiddenNames=", Array.from(hiddenNames));
+     const storedScreenName = window.localStorage.getItem(TV_SCREEN_NAME_STORAGE_KEY);
+     if (storedScreenName && debugMode !== "inspect" && !didLogStoredScreenName) {
+-      console.log("[TV] screenName=", storedScreenName);
++      console.log("[TV] screenName ignored for placement=", storedScreenName);
+       didLogStoredScreenName = true;
+     }
+   }, [debugMode, hiddenNames, rawRender]);
+@@ -994,6 +1518,9 @@ function RetroTv3DLoaded({
+         <RetroTvScene
+           model={model}
+           screen={children}
++          debugMode={debugMode}
++          screenFit={storedScreenFit}
++          screenPowered={lampOn}
+           rawRender={rawRender}
+           debugRawLike={effectiveDebugRawLike}
+           reducedMotion={reducedMotion}
+@@ -1042,7 +1569,39 @@ export function RetroTv3D(props: RetroTv3DProps) {
+   const [rawRender, setRawRender] = useState(false);
+ 
+   useEffect(() => {
+-    const enabled = new URLSearchParams(window.location.search).get("tvRender") === "raw";
++    const params = new URLSearchParams(window.location.search);
++    const screenResetEnabled = params.get("tvScreenReset") === "1";
++    if (screenResetEnabled) {
++      const alreadyReset = window.sessionStorage.getItem(TV_SCREEN_RESET_DONE_KEY) === "1";
++      if (!alreadyReset) {
++        window.localStorage.removeItem(TV_HIDDEN_STORAGE_KEY);
++        window.localStorage.removeItem("collabs.tvHiddenNames");
++        window.localStorage.removeItem(TV_SCREEN_NAME_STORAGE_KEY);
++        window.localStorage.removeItem(TV_SCREEN_FIT_STORAGE_KEY);
++        window.sessionStorage.setItem(TV_SCREEN_RESET_DONE_KEY, "1");
++        window.location.reload();
++        return;
++      }
++    } else {
++      window.sessionStorage.removeItem(TV_SCREEN_RESET_DONE_KEY);
++    }
++
++    const debugResetEnabled = params.get("tvDebugReset") === "1";
++    if (debugResetEnabled) {
++      const alreadyReset = window.sessionStorage.getItem(TV_DEBUG_RESET_DONE_KEY) === "1";
++      if (!alreadyReset) {
++        window.localStorage.removeItem(TV_HIDDEN_STORAGE_KEY);
++        window.localStorage.removeItem("collabs.tvHiddenNames");
++        window.localStorage.removeItem(TV_SCREEN_NAME_STORAGE_KEY);
++        window.sessionStorage.setItem(TV_DEBUG_RESET_DONE_KEY, "1");
++        window.location.reload();
++        return;
++      }
++    } else {
++      window.sessionStorage.removeItem(TV_DEBUG_RESET_DONE_KEY);
++    }
++
++    const enabled = params.get("tvRender") === "raw" || params.get("tvRenderer") === "raw";
+     // eslint-disable-next-line react-hooks/set-state-in-effect
+     setRawRender(enabled);
+     if (enabled && !didLogRawRender) {

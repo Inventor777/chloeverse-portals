@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import PolaroidCameraAssembly3D, {
   type LensProjection,
+  type PolaroidCameraAssembly3DHandle,
   type ScreenAnchorPx,
 } from "@/components/PolaroidCameraAssembly3D";
 import { ReturnButton } from "@/components/ReturnButton";
@@ -20,7 +21,9 @@ type ScenePhase =
   | "connected"
   | "retracting";
 
-type ContactStatus = "Assembling" | "Ready" | "Capturing" | "Ejecting" | "Connected";
+type InteractionState = "boot" | "ready" | "flashing" | "ejecting" | "connected" | "retracting";
+
+type ContactStatus = "Assembling" | "Ready" | "Capturing" | "Ejecting" | "Connected" | "Retracting";
 
 type ContactHeroProps = {
   onStatusChange?: (status: ContactStatus) => void;
@@ -37,21 +40,61 @@ type ContactInfoShape = {
   items?: Array<{ label?: string; value?: string }>;
 };
 
+type Contact3DDebug = {
+  glbStatus: "loading" | "loaded" | "error";
+  url: string;
+  totalMeshes: number;
+  visibleMeshes: number;
+  hiddenMeshes: number;
+  pinkOverrideApplied: boolean;
+  propHideApplied: boolean;
+  componentCount: number;
+  keptTris: number;
+  totalTris: number;
+  keptRatio: number;
+  isolateApplied: boolean;
+  cardAnchorProjected: boolean;
+  lensFound?: boolean;
+  lensCenter?: [number, number, number];
+  lensRadius?: number;
+  slotCreated?: boolean;
+  photoCreated?: boolean;
+  ejectState?: "idle" | "delayed" | "ejecting" | "done" | "retracting";
+  ejectT?: number;
+  createdParts?: boolean;
+  flashCenter?: [number, number, number];
+  viewCenter?: [number, number, number];
+  faceRight?: [number, number, number];
+  faceUp?: [number, number, number];
+  faceN?: [number, number, number];
+  partSizes?: {
+    lensR: number;
+    lensDepth: number;
+    flashW: number;
+    flashH: number;
+    viewW: number;
+    viewH: number;
+  };
+  bodyMaxDim?: number;
+  partCount?: number;
+  tune?: string;
+  anchorPx?: { x: number; y: number; visible: boolean };
+  message?: string;
+};
+
+const INTRO_SLOW = 1.1;
+const SHOW_DEBUG = false;
+
 const BEATS = {
-  blackHoldEnd: 0.4,
-  glowAppearEnd: 0.95,
-  glowTravelEnd: 1.95,
-  ringStart: 0.55,
-  ringPeakEnd: 2.9,
-  ringFadeEnd: 4.75,
-  irisStart: 1.95,
-  irisTightEnd: 4.25,
-  overlayFadeStart: 4.25,
-  overlayFadeEnd: 4.75,
-  closeupEnd: 4.8,
-  readyAt: 6.0,
-  captureToEject: 0.22,
-  ejectDone: 1.45,
+  blackHoldEnd: 0.45 * INTRO_SLOW,
+  glowAppearEnd: 1.1 * INTRO_SLOW,
+  glowTravelEnd: 2.25 * INTRO_SLOW,
+  irisStart: 2.25 * INTRO_SLOW,
+  irisTightEnd: 3.95 * INTRO_SLOW,
+  overlayFadeStart: 3.95 * INTRO_SLOW,
+  overlayFadeEnd: 4.8 * INTRO_SLOW,
+  closeupEnd: 3.95 * INTRO_SLOW,
+  readyAt: 4.8 * INTRO_SLOW,
 } as const;
 
 function clamp01(value: number) {
@@ -75,12 +118,6 @@ function mix(from: number, to: number, t: number) {
 function hash2(a: number, b: number) {
   const n = Math.sin(a * 127.1 + b * 311.7 + 17.17) * 43758.5453123;
   return n - Math.floor(n);
-}
-
-function ringNoise(ring: number, theta: number) {
-  const sector = Math.floor((theta / (Math.PI * 2)) * 96);
-  const n = hash2(ring * 19.37 + 3.1, sector * 5.17 + 1.7);
-  return (n - 0.5) * 2;
 }
 
 function usePrefersReducedMotion() {
@@ -122,26 +159,60 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const portalDebugRef = useRef(false);
 
+  const assemblyRef = useRef<PolaroidCameraAssembly3DHandle | null>(null);
+  const sequenceRef = useRef(0);
+  const captureSeqRef = useRef<number | null>(null);
+  const retractSeqRef = useRef<number | null>(null);
+  const timerRefs = useRef<number[]>([]);
+  const flashStartRef = useRef<number | null>(null);
+
   const phaseRef = useRef<ScenePhase>("lens_intro");
   const introTRef = useRef(0);
   const clockStartRef = useRef<number | null>(null);
-  const captureStartRef = useRef<number | null>(null);
-  const retractStartRef = useRef<number | null>(null);
   const lensRef = useRef<LensProjection | null>(null);
+  const interactionRef = useRef<InteractionState>("boot");
 
   const [phase, setPhase] = useState<ScenePhase>("lens_intro");
+  const [interactionState, setInteractionState] = useState<InteractionState>("boot");
   const [status, setStatus] = useState<ContactStatus>("Assembling");
   const [introT, setIntroT] = useState(0);
   const [flashAlpha, setFlashAlpha] = useState(0);
-  const [captureNonce, setCaptureNonce] = useState(0);
-  const [retractNonce, setRetractNonce] = useState(0);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
-  const [lensProject, setLensProject] = useState<LensProjection | null>(null);
+  const [seqId, setSeqId] = useState(0);
   const [cardAnchorPx, setCardAnchorPx] = useState<ScreenAnchorPx | null>(null);
+  const [glbStatus, setGlbStatus] = useState<{ status: string; url: string; message?: string }>({
+    status: "loading",
+    url: "/models/polaroid_texture.glb",
+  });
+  const [debugData, setDebugData] = useState<Contact3DDebug>({
+    glbStatus: "loading",
+    url: "/models/polaroid_texture.glb",
+    totalMeshes: 0,
+    visibleMeshes: 0,
+    hiddenMeshes: 0,
+    pinkOverrideApplied: false,
+    propHideApplied: false,
+    componentCount: 0,
+    keptTris: 0,
+    totalTris: 0,
+    keptRatio: 0,
+    isolateApplied: false,
+    cardAnchorProjected: false,
+  });
+  const [debugOverlayEnabled] = useState(() => {
+    const queryDebug =
+      typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "1";
+    const devMode = process.env.NODE_ENV !== "production";
+    return queryDebug || (devMode && SHOW_DEBUG);
+  });
 
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  useEffect(() => {
+    interactionRef.current = interactionState;
+  }, [interactionState]);
 
   useEffect(() => {
     introTRef.current = introT;
@@ -163,24 +234,37 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
 
   const setPhaseSafe = useCallback(
     (next: ScenePhase) => {
-      const prev = phaseRef.current;
-      if (prev === next) return;
+      if (phaseRef.current === next) return;
       phaseRef.current = next;
       setPhase(next);
-      if (next === "ready") {
-        debugLog("READY");
-      }
+      if (next === "ready") debugLog("READY");
     },
     [debugLog]
   );
+
+  const setInteractionSafe = useCallback((next: InteractionState) => {
+    setInteractionState((prev) => {
+      if (prev === next) return prev;
+      interactionRef.current = next;
+      return next;
+    });
+  }, []);
 
   const setStatusSafe = useCallback((next: ContactStatus) => {
     setStatus((prev) => (prev === next ? prev : next));
   }, []);
 
+  const clearTimers = useCallback(() => {
+    while (timerRefs.current.length > 0) {
+      const id = timerRefs.current.pop();
+      if (typeof id === "number") {
+        window.clearTimeout(id);
+      }
+    }
+  }, []);
+
   const onLensProject = useCallback((next: LensProjection) => {
     lensRef.current = next;
-    setLensProject(next);
   }, []);
 
   useEffect(() => {
@@ -242,25 +326,75 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
   }, [ensureAudioContext]);
 
   const startCapture = useCallback(() => {
-    if (phaseRef.current !== "ready") return;
+    if (interactionRef.current !== "ready") return;
+
     debugLog("CAPTURE TRIGGERED");
     playShutterClick();
-    captureStartRef.current = performance.now();
-    retractStartRef.current = null;
-    setPhaseSafe("capturing");
-    setCaptureNonce((value) => value + 1);
-    setStatusSafe("Capturing");
-  }, [debugLog, playShutterClick, setPhaseSafe, setStatusSafe]);
+    clearTimers();
 
-  const onPutBack = useCallback(() => {
-    if (phaseRef.current !== "connected") return;
+    const seq = sequenceRef.current + 1;
+    sequenceRef.current = seq;
+    setSeqId(seq);
+    captureSeqRef.current = seq;
+    retractSeqRef.current = null;
+
+    flashStartRef.current = performance.now();
+    setInteractionSafe("flashing");
+    setPhaseSafe("capturing");
+    setStatusSafe("Capturing");
+    assemblyRef.current?.triggerFlashOnly?.();
+
+    const didStart = assemblyRef.current?.trigger() ?? false;
+    if (!didStart) {
+      setInteractionSafe("ready");
+      setPhaseSafe("ready");
+      setStatusSafe("Ready");
+      flashStartRef.current = null;
+      return;
+    }
+
+    setInteractionSafe("ejecting");
+    setPhaseSafe("ejecting");
+    setStatusSafe("Ejecting");
+  }, [clearTimers, debugLog, playShutterClick, setInteractionSafe, setPhaseSafe, setStatusSafe]);
+
+  const finalizeRetract = useCallback(
+    (seq: number) => {
+      if (sequenceRef.current !== seq) return;
+      debugLog("RETRACT DONE");
+      setInteractionSafe("ready");
+      setPhaseSafe("ready");
+      setStatusSafe("Ready");
+      setIntroT(BEATS.readyAt);
+      flashStartRef.current = null;
+      retractSeqRef.current = null;
+    },
+    [debugLog, setInteractionSafe, setPhaseSafe, setStatusSafe]
+  );
+
+  const onPutBack = useCallback(async () => {
+    if (interactionRef.current !== "connected") return;
+
     debugLog("PUT BACK TRIGGERED");
-    setRetractNonce((value) => value + 1);
-    retractStartRef.current = performance.now();
-    captureStartRef.current = null;
+    clearTimers();
+
+    const seq = sequenceRef.current + 1;
+    sequenceRef.current = seq;
+    setSeqId(seq);
+    retractSeqRef.current = seq;
+    captureSeqRef.current = null;
+
+    setInteractionSafe("retracting");
     setPhaseSafe("retracting");
-    setStatusSafe("Assembling");
-  }, [debugLog, setPhaseSafe, setStatusSafe]);
+    setStatusSafe("Retracting");
+    flashStartRef.current = null;
+    setFlashAlpha(0);
+
+    await (assemblyRef.current?.putBack() ?? Promise.resolve());
+    if (sequenceRef.current !== seq) return;
+    finalizeRetract(seq);
+  }, [clearTimers, debugLog, finalizeRetract, setInteractionSafe, setPhaseSafe, setStatusSafe]);
+
 
   const drawIntroOverlay = useCallback((nowMs: number) => {
     const canvas = fxCanvasRef.current;
@@ -286,61 +420,37 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
     const fxT = introTRef.current;
     const frame = Math.floor(fxT * 60);
     const minDim = Math.min(width, height);
-    const maxDim = Math.max(width, height);
-
     const lens = lensRef.current;
-    const lensX = clamp(lens?.visible ? lens.x : width * 0.59, 0, width);
-    const lensY = clamp(lens?.visible ? lens.y : height * 0.28, 0, height);
-    const startX = clamp(lensX + minDim * 0.3, 0, width);
-    const startY = clamp(lensY - minDim * 0.24, 0, height);
-    const ctrlX = mix(startX, lensX, 0.45) - minDim * 0.06;
-    const ctrlY = mix(startY, lensY, 0.45) + minDim * 0.02;
+    const lensX = clamp(lens?.visible ? lens.x : width * 0.58, 0, width);
+    const lensY = clamp(lens?.visible ? lens.y : height * 0.31, 0, height);
+    const sourceX = clamp(lensX + minDim * 0.3, 0, width);
+    const sourceY = clamp(lensY - minDim * 0.24, 0, height);
 
     const appearT = smoothstep(BEATS.blackHoldEnd, BEATS.glowAppearEnd, fxT);
     const travelT = smoothstep(BEATS.glowAppearEnd, BEATS.glowTravelEnd, fxT);
-    const omt = 1 - travelT;
-    const bezierX = omt * omt * startX + 2 * omt * travelT * ctrlX + travelT * travelT * lensX;
-    const bezierY = omt * omt * startY + 2 * omt * travelT * ctrlY + travelT * travelT * lensY;
-    const holdX = mix(startX, mix(startX, lensX, 0.08), appearT);
-    const holdY = mix(startY, mix(startY, lensY, 0.06), appearT);
-    const glowLocked = fxT >= BEATS.glowTravelEnd;
-    const cx = fxT < BEATS.glowAppearEnd ? holdX : glowLocked ? lensX : bezierX;
-    const cy = fxT < BEATS.glowAppearEnd ? holdY : glowLocked ? lensY : bezierY;
+    const cx = mix(sourceX, lensX, travelT);
+    const cy = mix(sourceY, lensY, travelT);
 
     const blackHold = 1 - smoothstep(0, BEATS.blackHoldEnd, fxT);
-    const preIris = smoothstep(BEATS.blackHoldEnd, BEATS.glowTravelEnd, fxT);
     const irisT = smoothstep(BEATS.irisStart, BEATS.irisTightEnd, fxT);
     const introFade = 1 - smoothstep(BEATS.overlayFadeStart, BEATS.overlayFadeEnd, fxT);
-    const lensRadius = lens?.visible ? lens.r : minDim * 0.065;
-    const fxScale = mix(1.16, 1, smoothstep(0.55, BEATS.glowTravelEnd, fxT));
-    const useFxScale = fxT >= BEATS.blackHoldEnd && fxT <= BEATS.glowTravelEnd;
-
-    const setBaseTransform = () => {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    const setFxTransform = () => {
-      if (!useFxScale) {
-        setBaseTransform();
-        return;
-      }
-      ctx.setTransform(dpr * fxScale, 0, 0, dpr * fxScale, (1 - fxScale) * cx * dpr, (1 - fxScale) * cy * dpr);
-    };
-
     const baseDark =
       fxT < BEATS.blackHoldEnd
         ? 1
-        : fxT < BEATS.glowTravelEnd
-          ? mix(0.92, 0.54, preIris)
-          : fxT < BEATS.irisTightEnd
-            ? mix(0.54, 0.3, irisT)
-            : mix(0.3, 0.08, 1 - introFade);
+        : fxT < BEATS.glowAppearEnd
+          ? mix(0.92, 0.78, appearT)
+          : fxT < BEATS.glowTravelEnd
+            ? mix(0.76, 0.48, travelT)
+            : fxT < BEATS.irisTightEnd
+              ? mix(0.46, 0.22, irisT)
+              : mix(0.16, 0.04, 1 - introFade);
 
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
     ctx.fillStyle = `rgba(1,2,6,${(baseDark * introFade).toFixed(3)})`;
     ctx.fillRect(0, 0, width, height);
 
-    const grainAlpha = fxT < BEATS.overlayFadeEnd ? 0.02 : 0.014;
+    const grainAlpha = fxT < BEATS.overlayFadeEnd ? 0.018 : 0.006;
     for (let i = 0; i < 280; i += 1) {
       const x = hash2(i, frame * 7 + 3) * width;
       const y = hash2(i + 19, frame * 5 + 11) * height;
@@ -349,106 +459,31 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
       ctx.fillRect(x, y, 1, 1);
     }
 
-    const ringBoost = 1 + 0.28 * smoothstep(1.1, 1.4, fxT) * (1 - smoothstep(2.6, 2.9, fxT));
-    const ringStrength =
-      smoothstep(BEATS.ringStart, 1.04, fxT) *
-      (1 - smoothstep(BEATS.ringPeakEnd, BEATS.ringFadeEnd, fxT)) *
-      introFade *
-      ringBoost;
-    const bloomStrength =
-      smoothstep(BEATS.blackHoldEnd, BEATS.glowAppearEnd, fxT) *
-      (1 - smoothstep(3.0, BEATS.ringFadeEnd, fxT)) *
-      introFade;
-
-    if (bloomStrength > 0.001) {
-      setFxTransform();
-      const bloomRadius = mix(lensRadius * 0.8, maxDim * 0.62, preIris);
-      const bloom = ctx.createRadialGradient(cx, cy, 0, cx, cy, bloomRadius);
+    const offAxisGlow = appearT * (1 - smoothstep(2.05 * INTRO_SLOW, 2.3 * INTRO_SLOW, fxT)) * introFade;
+    if (offAxisGlow > 0.001) {
+      const bloom = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(width, height) * 0.5);
       bloom.addColorStop(0, "rgba(248,251,255,0.9)");
-      bloom.addColorStop(0.22, "rgba(224,232,246,0.55)");
-      bloom.addColorStop(0.48, "rgba(126,140,162,0.2)");
+      bloom.addColorStop(0.24, "rgba(224,232,246,0.48)");
+      bloom.addColorStop(0.5, "rgba(126,140,162,0.16)");
       bloom.addColorStop(1, "rgba(0,0,0,0)");
       ctx.globalCompositeOperation = "lighter";
-      ctx.globalAlpha = 0.58 * bloomStrength;
+      ctx.globalAlpha = 0.22 * offAxisGlow;
       ctx.fillStyle = bloom;
       ctx.fillRect(0, 0, width, height);
-      setBaseTransform();
     }
 
-    if (ringStrength > 0.001) {
-      setFxTransform();
-      const ringCount = 10;
-      const segmentCount = 108;
-      const ringScale = mix(0.9, 1.18, preIris);
-      ctx.globalCompositeOperation = "lighter";
-
-      for (let i = 0; i < ringCount; i += 1) {
-        const local = i / (ringCount - 1);
-        const baseR = mix(lensRadius * 1.2, lensRadius * 6.4, local) * ringScale;
-
-        for (let step = 0; step < segmentCount; step += 1) {
-          const th0 = (step / segmentCount) * Math.PI * 2;
-          const th1 = ((step + 1) / segmentCount) * Math.PI * 2;
-          const r0 =
-            baseR *
-            (1 +
-              0.017 * Math.sin(th0 * (3.2 + i * 0.28) + i * 0.36) +
-              0.014 * ringNoise(i, th0));
-          const r1 =
-            baseR *
-            (1 +
-              0.017 * Math.sin(th1 * (3.2 + i * 0.28) + i * 0.36) +
-              0.014 * ringNoise(i, th1));
-
-          const segVar = 0.7 + 0.3 * hash2(i * 1.7 + 9.1, step * 2.1 + 7.4);
-          const alpha = (0.058 + (1 - local) * 0.054) * segVar * ringStrength;
-
-          ctx.lineCap = "round";
-          ctx.strokeStyle = `rgba(194,208,234,${(alpha * 0.66).toFixed(3)})`;
-          ctx.lineWidth = mix(6.1, 2.8, local);
-          ctx.beginPath();
-          ctx.moveTo(cx + Math.cos(th0) * r0, cy + Math.sin(th0) * r0);
-          ctx.lineTo(cx + Math.cos(th1) * r1, cy + Math.sin(th1) * r1);
-          ctx.stroke();
-
-          ctx.strokeStyle = `rgba(224,233,248,${alpha.toFixed(3)})`;
-          ctx.lineWidth = mix(1.8, 0.9, local);
-          ctx.beginPath();
-          ctx.moveTo(cx + Math.cos(th0) * r0, cy + Math.sin(th0) * r0);
-          ctx.lineTo(cx + Math.cos(th1) * r1, cy + Math.sin(th1) * r1);
-          ctx.stroke();
-        }
-      }
-      setBaseTransform();
-    }
-
-    setFxTransform();
-    const innerR = mix(0.95 * minDim, 0.22 * minDim, irisT);
-    const outerR = innerR * 2.25;
+    const innerR = mix(0.95 * minDim, 0.27 * minDim, irisT);
+    const outerR = innerR * 2.2;
     const vignette = ctx.createRadialGradient(lensX, lensY, innerR, lensX, lensY, outerR);
     vignette.addColorStop(0, "rgba(0,0,0,0)");
-    vignette.addColorStop(0.44, "rgba(0,0,0,0.04)");
-    vignette.addColorStop(0.7, "rgba(0,0,0,0.19)");
-    vignette.addColorStop(1, "rgba(0,0,0,0.56)");
+    vignette.addColorStop(0.46, "rgba(0,0,0,0.035)");
+    vignette.addColorStop(0.72, "rgba(0,0,0,0.14)");
+    vignette.addColorStop(1, "rgba(0,0,0,0.34)");
     ctx.globalCompositeOperation = "source-over";
-    const ringVisibilityWindow = smoothstep(1.1, 1.4, fxT) * (1 - smoothstep(2.6, 2.9, fxT));
-    const irisOpacity = (0.18 + irisT * 0.28 + blackHold * 0.24) * (1 - 0.24 * ringVisibilityWindow);
+    const irisOpacity = 0.1 + irisT * 0.18 + blackHold * 0.16;
     ctx.globalAlpha = clamp01(irisOpacity * introFade);
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, width, height);
-    setBaseTransform();
-
-    const residual = smoothstep(BEATS.overlayFadeEnd, 5.4, fxT);
-    if (residual > 0.001 || fxT > BEATS.overlayFadeEnd) {
-      setFxTransform();
-      const subtle = ctx.createRadialGradient(lensX, lensY, minDim * 0.12, lensX, lensY, maxDim * 0.95);
-      subtle.addColorStop(0, "rgba(255,255,255,0.015)");
-      subtle.addColorStop(1, "rgba(0,0,0,0.24)");
-      ctx.globalAlpha = mix(0.03, 0.08, residual);
-      ctx.fillStyle = subtle;
-      ctx.fillRect(0, 0, width, height);
-      setBaseTransform();
-    }
 
     void nowMs;
   }, []);
@@ -463,19 +498,14 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
         clockStartRef.current = now;
       }
 
-      const currentPhase = phaseRef.current;
       const elapsedIntro = Math.max(0, (now - clockStartRef.current) / 1000);
+      const interaction = interactionRef.current;
 
-      if (
-        currentPhase === "lens_intro" ||
-        currentPhase === "lens_closeup" ||
-        currentPhase === "dolly_out" ||
-        currentPhase === "ready"
-      ) {
+      if (interaction === "boot" || interaction === "ready") {
         const t = Math.min(BEATS.readyAt, elapsedIntro);
         setIntroT(t);
 
-        if (t < 1.7) {
+        if (t < BEATS.glowAppearEnd) {
           setPhaseSafe("lens_intro");
           setStatusSafe("Assembling");
         } else if (t < BEATS.closeupEnd) {
@@ -487,25 +517,25 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
         } else {
           setPhaseSafe("ready");
           setStatusSafe("Ready");
+          if (interaction === "boot") {
+            setInteractionSafe("ready");
+          }
         }
         setFlashAlpha(0);
-      } else if (currentPhase === "capturing" || currentPhase === "ejecting" || currentPhase === "connected") {
-        const captureStart = captureStartRef.current ?? now;
-        const captureElapsed = Math.max(0, (now - captureStart) / 1000);
-        const flashRise = smoothstep(0.01, 0.05, captureElapsed);
-        const flashFall = 1 - smoothstep(0.06, 0.14, captureElapsed);
-        setFlashAlpha(clamp01(flashRise * flashFall * 0.88));
-
-        if (captureElapsed < BEATS.captureToEject) {
-          setStatusSafe("Capturing");
-        } else if (captureElapsed < BEATS.ejectDone && currentPhase !== "connected") {
-          setPhaseSafe("ejecting");
-          setStatusSafe("Ejecting");
-        }
-        if (captureElapsed > 0.16) setFlashAlpha(0);
-      } else if (currentPhase === "retracting") {
+      } else if (interaction === "flashing" || interaction === "ejecting") {
+        const flashStart = flashStartRef.current ?? now;
+        const captureElapsed = Math.max(0, (now - flashStart) / 1000);
+        const flashRise = smoothstep(0, 0.03, captureElapsed);
+        const flashFall = 1 - smoothstep(0.045, 0.12, captureElapsed);
+        setFlashAlpha(clamp01(flashRise * flashFall * 0.9));
+        if (captureElapsed > 0.12) setFlashAlpha(0);
+        setStatusSafe(interaction === "flashing" ? "Capturing" : "Ejecting");
+      } else if (interaction === "connected") {
         setFlashAlpha(0);
-        setStatusSafe("Assembling");
+        setStatusSafe("Connected");
+      } else if (interaction === "retracting") {
+        setFlashAlpha(0);
+        setStatusSafe("Retracting");
       }
 
       drawIntroOverlay(now);
@@ -518,59 +548,71 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
         window.cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      clearTimers();
       if (audioContextRef.current) {
         void audioContextRef.current.close();
         audioContextRef.current = null;
       }
     };
-  }, [drawIntroOverlay, prefersReducedMotion, setPhaseSafe, setStatusSafe]);
+  }, [
+    clearTimers,
+    drawIntroOverlay,
+    prefersReducedMotion,
+    setInteractionSafe,
+    setPhaseSafe,
+    setStatusSafe,
+  ]);
 
-  const ready = phase === "ready";
-  const panelVisible = phase === "connected";
-  const anchorX = cardAnchorPx?.visible ? cardAnchorPx.x : lensProject?.visible ? lensProject.x : stageSize.width * 0.55;
-  const anchorY = cardAnchorPx?.visible ? cardAnchorPx.y : lensProject?.visible ? lensProject.y : stageSize.height * 0.46;
-  const panelWidth = stageSize.width >= 768 ? 590 : clamp(stageSize.width - 36, 300, 620);
+  useEffect(() => {
+    assemblyRef.current?.setInteractionEnabled(interactionState === "ready");
+  }, [interactionState]);
+
+  const panelWidth =
+    stageSize.width >= 768
+      ? clamp(stageSize.width * 0.46, 520, 620)
+      : clamp(stageSize.width - 40, 280, Math.max(280, stageSize.width - 32));
   const panelHeight = clamp(336 + contactRows.length * 58, 400, 520);
-  const panelLeft = clamp(anchorX - panelWidth * 0.18, 18, Math.max(18, stageSize.width - panelWidth - 18));
-  const panelTop = clamp(anchorY - panelHeight * 0.15, 18, Math.max(18, stageSize.height - panelHeight - 18));
 
-  const onStagePointerDown = useCallback(() => {
-    ensureAudioContext();
-    if (phaseRef.current === "ready") {
-      startCapture();
-    }
-  }, [ensureAudioContext, startCapture]);
+  const rawAnchorX = cardAnchorPx?.x ?? 0;
+  const rawAnchorY = cardAnchorPx?.y ?? 0;
+
+  const minX = 24 + panelWidth * 0.5;
+  const maxX = stageSize.width - 24 - panelWidth * 0.5;
+  const minY = 24 + panelHeight * 0.44;
+  const maxY = stageSize.height - 24 - panelHeight * 0.56;
+
+  const panelX = maxX > minX ? clamp(rawAnchorX, minX, maxX) : stageSize.width * 0.5;
+  const panelY = maxY > minY ? clamp(rawAnchorY, minY, maxY) : stageSize.height * 0.5;
+
+  const panelVisible = interactionState === "connected" && !!cardAnchorPx?.visible;
+  const stageVignetteOpacity = interactionState === "ready" || interactionState === "connected" ? 0 : 1;
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-black text-white">
-      <div className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.03),rgba(0,0,0,0.82)_64%)]" />
-
       <div
-        ref={stageRef}
-        className="absolute inset-0 z-[5]"
-        style={{ cursor: ready ? "pointer" : "default" }}
-        onPointerDown={onStagePointerDown}
-      >
+        className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.045),rgba(0,0,0,0.66)_64%)]"
+        style={{ opacity: stageVignetteOpacity }}
+      />
+
+      <div ref={stageRef} className="absolute inset-0 z-[5]">
         <PolaroidCameraAssembly3D
+          ref={assemblyRef}
           phase={phase}
           timelineT={introT}
-          captureNonce={captureNonce}
-          retractNonce={retractNonce}
-          isInteractive={ready}
+          isInteractive={interactionState === "ready"}
           onCaptureIntent={startCapture}
           onLensProject={onLensProject}
           onCardAnchorPx={setCardAnchorPx}
+          onGlbStatus={setGlbStatus}
+          onDebug={setDebugData}
           onEjectDone={() => {
+            const captureSeq = captureSeqRef.current;
+            if (captureSeq === null || captureSeq !== sequenceRef.current) return;
             debugLog("EJECT DONE");
+            setInteractionSafe("connected");
             setPhaseSafe("connected");
             setStatusSafe("Connected");
             setFlashAlpha(0);
-          }}
-          onRetractDone={() => {
-            debugLog("RETRACT DONE");
-            setPhaseSafe("ready");
-            setStatusSafe("Ready");
-            setIntroT(BEATS.readyAt);
           }}
         />
       </div>
@@ -582,6 +624,81 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
         <h1 className="text-[2.2rem] font-semibold tracking-[0.14em] text-white/90 md:text-[3.6rem]">{title}</h1>
         <p className="mt-2 text-xs tracking-[0.08em] text-white/56 md:text-sm">{subtitle}</p>
         <p className="mt-3 text-[11px] uppercase tracking-[0.22em] text-white/48 md:text-xs">Status {status}</p>
+        {debugOverlayEnabled ? (
+          <div className="mt-2 inline-block max-w-[min(92vw,620px)] rounded border border-white/20 bg-black/55 px-2 py-1 font-mono text-[10px] leading-tight text-white/85">
+            <div>{`GLB: ${glbStatus.status}`}</div>
+            <div className="break-all text-white/70">{glbStatus.url}</div>
+            {glbStatus.status === "error" && glbStatus.message ? (
+              <div className="break-all text-[#ffb4b4]">{glbStatus.message}</div>
+            ) : null}
+          </div>
+        ) : null}
+        {debugOverlayEnabled ? (
+          <div className="mt-2 inline-block max-w-[min(92vw,620px)] rounded border border-white/20 bg-black/70 px-2 py-1 font-mono text-[10px] leading-tight text-white/85">
+            <div>{`state: ${interactionState}`}</div>
+            <div>{`seqId: ${seqId}`}</div>
+            <div>{`glbStatus: ${debugData.glbStatus}`}</div>
+            <div>{`meshes: ${debugData.totalMeshes}/${debugData.visibleMeshes}/${debugData.hiddenMeshes}`}</div>
+            <div>{`pinkOverrideApplied: ${debugData.pinkOverrideApplied ? "yes" : "no"}`}</div>
+            <div>{`propHideApplied: ${debugData.propHideApplied ? "yes" : "no"}`}</div>
+            <div>{`componentCount: ${debugData.componentCount}`}</div>
+            <div>{`keptTris: ${debugData.keptTris}/${debugData.totalTris} (${(debugData.keptRatio * 100).toFixed(1)}%)`}</div>
+            <div>{`isolateApplied: ${debugData.isolateApplied ? "yes" : "no"}`}</div>
+            <div>{`proceduralParts: ${debugData.createdParts ? "created" : "missing"}`}</div>
+            <div>{`lensFound: ${debugData.lensFound ? "yes" : "no"}`}</div>
+            <div>{`slotCreated: ${debugData.slotCreated ? "yes" : "no"}`}</div>
+            <div>{`photoCreated: ${debugData.photoCreated ? "yes" : "no"}`}</div>
+            <div>{`ejectState: ${debugData.ejectState ?? "n/a"} (${((debugData.ejectT ?? 0) * 100).toFixed(0)}%)`}</div>
+            <div>
+              {`lensCenter: ${
+                debugData.lensCenter
+                  ? `${debugData.lensCenter.map((v) => v.toFixed(3)).join(",")}`
+                  : "n/a"
+              }`}
+            </div>
+            <div>{`lensRadius: ${typeof debugData.lensRadius === "number" ? debugData.lensRadius.toFixed(3) : "n/a"}`}</div>
+            <div>
+              {`flashCenter: ${
+                debugData.flashCenter
+                  ? `${debugData.flashCenter.map((v) => v.toFixed(3)).join(",")}`
+                  : "n/a"
+              }`}
+            </div>
+            <div>
+              {`viewCenter: ${
+                debugData.viewCenter
+                  ? `${debugData.viewCenter.map((v) => v.toFixed(3)).join(",")}`
+                  : "n/a"
+              }`}
+            </div>
+            <div>
+              {`faceBasis: ${
+                debugData.faceN && debugData.faceRight && debugData.faceUp
+                  ? `N(${debugData.faceN.map((v) => v.toFixed(2)).join(",")}) R(${debugData.faceRight.map((v) => v.toFixed(2)).join(",")}) U(${debugData.faceUp.map((v) => v.toFixed(2)).join(",")})`
+                  : "n/a"
+              }`}
+            </div>
+            <div>
+              {`partSizes: ${
+                debugData.partSizes
+                  ? `lensR ${debugData.partSizes.lensR.toFixed(3)} flash ${debugData.partSizes.flashW.toFixed(3)}x${debugData.partSizes.flashH.toFixed(3)} view ${debugData.partSizes.viewW.toFixed(3)}x${debugData.partSizes.viewH.toFixed(3)}`
+                  : "n/a"
+              }`}
+            </div>
+            <div>{`bodyMaxDim: ${typeof debugData.bodyMaxDim === "number" ? debugData.bodyMaxDim.toFixed(3) : "n/a"}`}</div>
+            <div>{`partCount: ${typeof debugData.partCount === "number" ? debugData.partCount : "n/a"}`}</div>
+            <div>{`tune: ${debugData.tune ?? "n/a"}`}</div>
+            <div>{`cardAnchorProjected: ${debugData.cardAnchorProjected ? "yes" : "no"}`}</div>
+            <div>
+              {`anchorPx: ${
+                debugData.anchorPx
+                  ? `${Math.round(debugData.anchorPx.x)},${Math.round(debugData.anchorPx.y)},${debugData.anchorPx.visible ? "visible" : "hidden"}`
+                  : "none"
+              }`}
+            </div>
+            {debugData.message ? <div className="text-[#ffb4b4]">{debugData.message}</div> : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="absolute left-5 top-36 z-[24] md:left-10 md:top-40">
@@ -591,11 +708,16 @@ export function PolaroidContactHero({ onStatusChange }: ContactHeroProps) {
       <AnimatePresence>
         {panelVisible ? (
           <motion.aside
-            className="pointer-events-auto absolute z-[40] w-[600px] max-w-[620px] min-w-[560px] overflow-hidden rounded-[1.4rem] border border-white/18 bg-white/[0.08] p-6 shadow-[0_36px_90px_rgba(0,0,0,0.6)] backdrop-blur-[18px] max-md:w-[92vw] max-md:min-w-0 max-md:max-w-[92vw] md:p-7"
-            style={{ width: panelWidth, left: panelLeft, top: panelTop }}
-            initial={{ opacity: 0, y: 8, filter: "blur(8px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: 8, filter: "blur(6px)" }}
+            className="pointer-events-auto fixed z-[40] w-[600px] max-w-[640px] min-w-[560px] overflow-hidden rounded-[1.4rem] border border-white/18 bg-white/[0.08] p-6 shadow-[0_36px_90px_rgba(0,0,0,0.6)] backdrop-blur-[18px] max-md:w-[92vw] max-md:min-w-0 max-md:max-w-[92vw] md:p-7"
+            style={{
+              width: panelWidth,
+              left: 0,
+              top: 0,
+              transform: `translate3d(${panelX}px, ${panelY}px, 0) translate(-50%, -50%)`,
+            }}
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
           >
             <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(150deg,rgba(255,255,255,0.18),rgba(255,255,255,0.04)_46%,rgba(0,0,0,0.22))]" />

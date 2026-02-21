@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 export type LensProjection = {
   x: number;
@@ -26,6 +28,38 @@ type ScenePhase =
   | "connected"
   | "retracting";
 
+export type PolaroidCameraAssembly3DHandle = {
+  trigger: () => boolean;
+  triggerFlashOnly: () => void;
+  putBack: () => Promise<void>;
+  setInteractionEnabled: (enabled: boolean) => void;
+};
+
+type DebugPayload = {
+  glbStatus: "loading" | "loaded" | "error";
+  url: string;
+  totalMeshes: number;
+  visibleMeshes: number;
+  hiddenMeshes: number;
+  pinkOverrideApplied: boolean;
+  propHideApplied: boolean;
+  componentCount: number;
+  keptTris: number;
+  totalTris: number;
+  keptRatio: number;
+  isolateApplied: boolean;
+  cardAnchorProjected: boolean;
+  lensFound?: boolean;
+  lensCenter?: [number, number, number];
+  lensRadius?: number;
+  slotCreated?: boolean;
+  photoCreated?: boolean;
+  ejectState?: "idle" | "delayed" | "ejecting" | "done" | "retracting";
+  ejectT?: number;
+  anchorPx?: { x: number; y: number; visible: boolean };
+  message?: string;
+};
+
 type PolaroidCameraAssembly3DProps = {
   phase?: ScenePhase;
   timelineT?: number;
@@ -37,42 +71,48 @@ type PolaroidCameraAssembly3DProps = {
   onLensProject?: (projection: LensProjection) => void;
   onReady?: () => void;
   onCaptureStart?: () => void;
+  onFlash?: () => void;
   onEjectDone?: () => void;
   onRetractDone?: () => void;
   onCardAnchorPx?: (projection: ScreenAnchorPx) => void;
   onStatusChange?: (status: string) => void;
+  onGlbStatus?: (s: { status: "loading" | "loaded" | "error"; url: string; message?: string }) => void;
+  onDebug?: (d: DebugPayload) => void;
 };
 
-const BEATS = {
-  closeupEnd: 4.8,
-  readyAt: 6.0,
-} as const;
+type MaterialLike = THREE.Material & {
+  color?: THREE.Color;
+  map?: THREE.Texture | null;
+  normalMap?: THREE.Texture | null;
+  roughnessMap?: THREE.Texture | null;
+  metalnessMap?: THREE.Texture | null;
+  emissiveMap?: THREE.Texture | null;
+  emissive?: THREE.Color;
+};
 
-const PHOTO = {
-  travelDelay: 0.22,
-  travelDuration: 1.12,
-  retractEnd: 0.55,
+const GLB_URL = "/models/polaroid_texture.glb";
+const INTRO_SLOW = 1.1;
+const TARGET_SIZE = 1.35;
+const HERO_FIT = 0.86;
+const HERO_SETTLE_MS = 450;
+const EJECT_DELAY_MS = 240;
+const EJECT_DUR_MS = 1150;
+const PHOTO_RETRACT_MS = 500;
+
+const BEATS = {
+  revealStart: 2.25 * INTRO_SLOW,
+  revealEnd: 3.95 * INTRO_SLOW,
+  readyAt: 4.8 * INTRO_SLOW,
 } as const;
 
 const FRAMING = {
-  heroFillWidth: 0.8,
-  heroFillHeight: 0.78,
-  heroDistanceScale: 1.24,
   heroFov: 24,
   macroFov: 12.8,
-  macroDistance: 0.052,
+  macroDistance: 0.11,
 } as const;
 
-const ANCHORS = {
-  lensOffsetX: 0.42,
-  frontFaceZ: 1.05,
-  topSlotY: 1.02,
-  topSlotZ: 0.91,
-  topExitZ: 0.89,
-} as const;
-
-function clamp01(value: number) {
-  return Math.max(0, Math.min(1, value));
+function clamp01(v: number) {
+  return Math.max(0, Math.min(1, v));
 }
 
 function smoothstep(edge0: number, edge1: number, value: number) {
@@ -90,1029 +130,763 @@ function easeOutCubic(t: number) {
   return 1 - (1 - c) * (1 - c) * (1 - c);
 }
 
-function easeInQuad(t: number) {
+function easeInOutCubic(t: number) {
   const c = clamp01(t);
-  return c * c;
+  return c < 0.5 ? 4 * c * c * c : 1 - Math.pow(-2 * c + 2, 3) * 0.5;
 }
 
-function roundedBoxGeometry(width: number, height: number, depth: number, radius = 0.1, segments = 10) {
-  const hw = width * 0.5;
-  const hd = depth * 0.5;
-  const r = Math.min(radius, hw - 0.01, hd - 0.01);
+function computeFitDistance(box: THREE.Box3, camera: THREE.PerspectiveCamera, fit = HERO_FIT) {
+  const size = box.getSize(new THREE.Vector3());
+  const vFov = THREE.MathUtils.degToRad(camera.fov);
+  const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * camera.aspect);
+  const dW = size.x / (2 * Math.tan(hFov * 0.5) * fit);
+  const dH = size.y / (2 * Math.tan(vFov * 0.5) * fit);
+  return Math.max(dW, dH) + size.z * 0.22;
+}
 
-  const shape = new THREE.Shape();
-  shape.moveTo(-hw + r, -hd);
-  shape.lineTo(hw - r, -hd);
-  shape.quadraticCurveTo(hw, -hd, hw, -hd + r);
-  shape.lineTo(hw, hd - r);
-  shape.quadraticCurveTo(hw, hd, hw - r, hd);
-  shape.lineTo(-hw + r, hd);
-  shape.quadraticCurveTo(-hw, hd, -hw, hd - r);
-  shape.lineTo(-hw, -hd + r);
-  shape.quadraticCurveTo(-hw, -hd, -hw + r, -hd);
+function setColorMapSpace(tex: THREE.Texture | null | undefined) {
+  if (!tex) return;
+  const t = tex as THREE.Texture & { encoding?: number; colorSpace?: THREE.ColorSpace };
+  if ("colorSpace" in t) {
+    t.colorSpace = THREE.SRGBColorSpace;
+  } else if ("encoding" in t) {
+    const legacy = t as unknown as { encoding?: number };
+    legacy.encoding = (THREE as unknown as { sRGBEncoding?: number }).sRGBEncoding ?? legacy.encoding;
+  }
+  t.needsUpdate = true;
+}
 
-  const bevel = Math.min(r * 0.42, Math.min(width, height, depth) * 0.14);
-  const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: height,
-    steps: 1,
-    bevelEnabled: true,
-    bevelSize: bevel,
-    bevelThickness: bevel,
-    bevelSegments: Math.max(3, Math.round(segments * 0.5)),
-    curveSegments: Math.max(8, segments),
+function simplifyMaterial(oldMaterial: THREE.Material, maxAnisotropy: number): THREE.MeshStandardMaterial {
+  const src = oldMaterial as MaterialLike;
+  const std = new THREE.MeshStandardMaterial({
+    color: src.color?.clone() ?? new THREE.Color(0xffffff),
+    metalness: 0,
+    roughness: 0.85,
   });
 
-  geometry.rotateX(-Math.PI * 0.5);
-  geometry.translate(0, -height * 0.5, 0);
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function computeFramedDistance(
-  target: THREE.Object3D,
-  camera: THREE.PerspectiveCamera,
-  aspect: number,
-  fillWidth = FRAMING.heroFillWidth,
-  fillHeight = FRAMING.heroFillHeight
-) {
-  const box = new THREE.Box3().setFromObject(target);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-  const vFov = THREE.MathUtils.degToRad(camera.fov);
-  const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * aspect);
-  const distW = size.x / (2 * Math.tan(hFov * 0.5) * fillWidth);
-  const distH = size.y / (2 * Math.tan(vFov * 0.5) * fillHeight);
-  const distance = Math.max(distW, distH) + size.z * 0.25;
-  return { center, distance };
-}
-
-function createApertureTexture() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 512;
-  canvas.height = 512;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-
-  const cx = 256;
-  const cy = 256;
-  ctx.fillStyle = "#040506";
-  ctx.fillRect(0, 0, 512, 512);
-
-  const bladeCount = 8;
-  for (let i = 0; i < bladeCount; i += 1) {
-    const a0 = (i / bladeCount) * Math.PI * 2 + 0.08;
-    const a1 = ((i + 1) / bladeCount) * Math.PI * 2 - 0.08;
-    ctx.beginPath();
-    ctx.moveTo(cx + Math.cos(a0) * 70, cy + Math.sin(a0) * 70);
-    ctx.lineTo(cx + Math.cos(a0) * 182, cy + Math.sin(a0) * 182);
-    ctx.arc(cx, cy, 182, a0, a1);
-    ctx.lineTo(cx + Math.cos(a1) * 70, cy + Math.sin(a1) * 70);
-    ctx.arc(cx, cy, 70, a1, a0, true);
-    ctx.closePath();
-    ctx.fillStyle = i % 2 === 0 ? "rgba(22,25,30,0.48)" : "rgba(16,18,22,0.58)";
-    ctx.fill();
+  if (src.map) {
+    std.map = src.map;
+    setColorMapSpace(std.map);
+    std.map.anisotropy = Math.min(8, maxAnisotropy);
+    std.map.needsUpdate = true;
   }
-
-  const radial = ctx.createRadialGradient(cx, cy, 12, cx, cy, 244);
-  radial.addColorStop(0, "rgba(0,0,0,0.98)");
-  radial.addColorStop(0.18, "rgba(0,0,0,0.92)");
-  radial.addColorStop(0.46, "rgba(8,10,12,0.7)");
-  radial.addColorStop(1, "rgba(4,5,6,1)");
-  ctx.fillStyle = radial;
-  ctx.fillRect(0, 0, 512, 512);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-function createShellRoughnessTexture() {
-  const size = 128;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-
-  const image = ctx.createImageData(size, size);
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const i = (y * size + x) * 4;
-      const n0 = Math.sin((x * 12.9898 + y * 78.233) * 0.175) * 43758.5453;
-      const n1 = Math.sin((x * 26.6517 + y * 41.773) * 0.097) * 24634.6345;
-      const grain = (((n0 - Math.floor(n0)) * 0.62 + (n1 - Math.floor(n1)) * 0.38) * 255) | 0;
-      image.data[i] = grain;
-      image.data[i + 1] = grain;
-      image.data[i + 2] = grain;
-      image.data[i + 3] = 255;
-    }
+  if (src.normalMap) {
+    std.normalMap = src.normalMap;
+    std.normalMap.needsUpdate = true;
   }
-  ctx.putImageData(image, 0, 0);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(4.5, 3.8);
-  tex.needsUpdate = true;
-  return tex;
+  if (src.roughnessMap) {
+    std.roughnessMap = src.roughnessMap;
+    std.roughnessMap.needsUpdate = true;
+  }
+  if (src.metalnessMap) {
+    std.metalnessMap = src.metalnessMap;
+    std.metalnessMap.needsUpdate = true;
+  }
+  if (src.emissiveMap) {
+    std.emissiveMap = src.emissiveMap;
+    setColorMapSpace(std.emissiveMap);
+    std.emissiveMap.needsUpdate = true;
+  }
+  if (src.emissive) std.emissive.copy(src.emissive);
+  std.needsUpdate = true;
+  return std;
 }
 
-function createPolaroid() {
+function createPhoto() {
   const group = new THREE.Group();
-
-  const photoGeo = new THREE.BoxGeometry(1.86, 2.26, 0.024);
-  photoGeo.translate(0, 2.26 / 2, 0);
-
-  const frame = new THREE.Mesh(
-    photoGeo,
-    new THREE.MeshStandardMaterial({ color: new THREE.Color("#f4f1ea"), roughness: 0.8, metalness: 0.02 })
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.56, 0.72, 0.012),
+    new THREE.MeshStandardMaterial({ color: "#f7f4ef", roughness: 0.68, metalness: 0 })
   );
-  frame.castShadow = true;
-  frame.receiveShadow = true;
-  group.add(frame);
-
-  const image = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.38, 1.26),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color("#10141b") })
-  );
-  image.position.set(0, 1.42, 0.0138);
-  group.add(image);
-
-  const footer = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.54, 0.42),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color("#f7f4ef") })
-  );
-  footer.position.set(0, 0.43, 0.0138);
-  group.add(footer);
-
+  group.add(mesh);
   return group;
 }
 
-export default function PolaroidCameraAssembly3D(props: PolaroidCameraAssembly3DProps) {
-  const mountRef = useRef<HTMLDivElement | null>(null);
+const PolaroidCameraAssembly3D = forwardRef<PolaroidCameraAssembly3DHandle, PolaroidCameraAssembly3DProps>(
+  function PolaroidCameraAssembly3D(props, ref) {
+    const mountRef = useRef<HTMLDivElement | null>(null);
+    const phaseRef = useRef<ScenePhase>(props.phase ?? "lens_intro");
+    const timelineRef = useRef<number>(Number.isFinite(props.timelineT) ? (props.timelineT as number) : 0);
+    const isInteractiveRef = useRef<boolean>(!!props.isInteractive);
+    const captureNonceRef = useRef<number>(props.captureNonce ?? 0);
+    const retractNonceRef = useRef<number>(props.retractNonce ?? 0);
 
-  const phaseRef = useRef<ScenePhase>(props.phase ?? "lens_intro");
-  const timelineRef = useRef<number>(Number.isFinite(props.timelineT) ? (props.timelineT as number) : 0);
-  const isInteractiveRef = useRef<boolean>(!!props.isInteractive);
-  const captureNonceRef = useRef<number>(props.captureNonce ?? 0);
-  const retractNonceRef = useRef<number>(props.retractNonce ?? 0);
-  const captureStartMsRef = useRef<number | null>(null);
-  const retractStartMsRef = useRef<number | null>(null);
-  const photoDockedRef = useRef(false);
+    const triggerFnRef = useRef<(() => boolean) | null>(null);
+    const triggerFlashOnlyFnRef = useRef<(() => void) | null>(null);
+    const putBackFnRef = useRef<(() => Promise<void>) | null>(null);
+    const setInteractionFnRef = useRef<((enabled: boolean) => void) | null>(null);
 
-  const callbacksRef = useRef({
-    onCaptureIntent: props.onCaptureIntent,
-    onPointerHoverChange: props.onPointerHoverChange,
-    onLensProject: props.onLensProject,
-    onReady: props.onReady,
-    onCaptureStart: props.onCaptureStart,
-    onEjectDone: props.onEjectDone,
-    onRetractDone: props.onRetractDone,
-    onCardAnchorPx: props.onCardAnchorPx,
-    onStatusChange: props.onStatusChange,
-  });
-
-  useEffect(() => {
-    if (props.phase) {
-      phaseRef.current = props.phase;
-    }
-  }, [props.phase]);
-
-  useEffect(() => {
-    if (Number.isFinite(props.timelineT)) {
-      timelineRef.current = props.timelineT as number;
-    }
-  }, [props.timelineT]);
-
-  useEffect(() => {
-    isInteractiveRef.current = !!props.isInteractive;
-  }, [props.isInteractive]);
-
-  useEffect(() => {
-    callbacksRef.current = {
+    const callbacksRef = useRef({
       onCaptureIntent: props.onCaptureIntent,
       onPointerHoverChange: props.onPointerHoverChange,
       onLensProject: props.onLensProject,
       onReady: props.onReady,
       onCaptureStart: props.onCaptureStart,
+      onFlash: props.onFlash,
       onEjectDone: props.onEjectDone,
       onRetractDone: props.onRetractDone,
       onCardAnchorPx: props.onCardAnchorPx,
       onStatusChange: props.onStatusChange,
-    };
-  }, [
-    props.onCaptureIntent,
-    props.onPointerHoverChange,
-    props.onLensProject,
-    props.onReady,
-    props.onCaptureStart,
-    props.onEjectDone,
-    props.onRetractDone,
-    props.onCardAnchorPx,
-    props.onStatusChange,
-  ]);
-
-  useEffect(() => {
-    const nonce = props.captureNonce ?? 0;
-    if (nonce !== captureNonceRef.current) {
-      captureNonceRef.current = nonce;
-      captureStartMsRef.current = performance.now();
-      retractStartMsRef.current = null;
-      photoDockedRef.current = false;
-      callbacksRef.current.onCaptureStart?.();
-      callbacksRef.current.onStatusChange?.("Capturing");
-    }
-  }, [props.captureNonce]);
-
-  useEffect(() => {
-    const nonce = props.retractNonce ?? 0;
-    if (nonce !== retractNonceRef.current) {
-      retractNonceRef.current = nonce;
-      retractStartMsRef.current = performance.now();
-      captureStartMsRef.current = null;
-    }
-  }, [props.retractNonce]);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(mount.clientWidth, mount.clientHeight);
-    renderer.setClearColor(0x000000, 1);
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.02;
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.localClippingEnabled = true;
-    renderer.domElement.style.position = "absolute";
-    renderer.domElement.style.inset = "0";
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-    renderer.domElement.style.display = "block";
-    mount.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(24, mount.clientWidth / mount.clientHeight, 0.01, 140);
-
-    scene.add(new THREE.AmbientLight(0xffffff, 0.18));
-    const key = new THREE.DirectionalLight(0xf9f5ed, 1.22);
-    key.position.set(3.4, 4.2, 4.9);
-    key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
-    key.shadow.bias = -0.00035;
-    key.shadow.radius = 3;
-    key.shadow.camera.near = 1;
-    key.shadow.camera.far = 20;
-    scene.add(key);
-
-    const fill = new THREE.DirectionalLight(0xe3e9f5, 0.28);
-    fill.position.set(-4.8, 1.6, 3.1);
-    scene.add(fill);
-
-    const rim = new THREE.DirectionalLight(0xd6dde8, 0.52);
-    rim.position.set(1.6, 3.1, -4.8);
-    rim.castShadow = true;
-    rim.shadow.mapSize.set(512, 512);
-    rim.shadow.bias = -0.00025;
-    scene.add(rim);
-
-    const lowFill = new THREE.DirectionalLight(0xf2efea, 0.18);
-    lowFill.position.set(0, -1.2, 2.8);
-    scene.add(lowFill);
-
-    const lensRimLight = new THREE.PointLight(0xdde6f7, 0.31, 8.2, 2);
-    lensRimLight.position.set(1.44, 1.06, 3.06);
-    scene.add(lensRimLight);
-
-    const rig = new THREE.Group();
-    rig.position.set(0, -0.02, 0);
-    rig.rotation.set(THREE.MathUtils.degToRad(2.8), THREE.MathUtils.degToRad(-1.4), THREE.MathUtils.degToRad(0.1));
-    scene.add(rig);
-
-    const cameraRoot = new THREE.Group();
-    cameraRoot.rotation.set(THREE.MathUtils.degToRad(8.6), THREE.MathUtils.degToRad(-2.2), THREE.MathUtils.degToRad(0.3));
-    rig.add(cameraRoot);
-
-    const cameraBodyGroup = new THREE.Group();
-    const movingPartsGroup = new THREE.Group();
-    cameraRoot.add(cameraBodyGroup);
-    cameraRoot.add(movingPartsGroup);
-
-    const shellRoughnessTexture = createShellRoughnessTexture();
-    const shellMaterial = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color("#d6ccbe"),
-      roughness: 0.38,
-      metalness: 0.08,
-      clearcoat: 0.25,
-      clearcoatRoughness: 0.35,
-      roughnessMap: shellRoughnessTexture || undefined,
-    });
-    const trimMaterial = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color("#c8bdae"),
-      roughness: 0.74,
-      metalness: 0.06,
-      clearcoat: 0.14,
-      clearcoatRoughness: 0.52,
-    });
-    const rubberMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#171b22"),
-      roughness: 0.97,
-      metalness: 0.01,
-    });
-    const darkMetalMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#3a3f47"),
-      roughness: 0.45,
-      metalness: 0.52,
-    });
-    const faceplateMaterial = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color("#d9d0c4"),
-      roughness: 0.54,
-      metalness: 0.08,
-      clearcoat: 0.34,
-      clearcoatRoughness: 0.5,
+      onGlbStatus: props.onGlbStatus,
+      onDebug: props.onDebug,
     });
 
-    const body = new THREE.Mesh(roundedBoxGeometry(4.54, 1.92, 2.02, 0.38, 28), shellMaterial);
-    body.position.y = 0.03;
-    body.castShadow = true;
-    body.receiveShadow = true;
-    cameraBodyGroup.add(body);
-
-    const faceplate = new THREE.Mesh(roundedBoxGeometry(3.92, 1.44, 0.16, 0.16, 20), faceplateMaterial);
-    faceplate.position.set(0, 0.02, 1.0);
-    faceplate.castShadow = true;
-    faceplate.receiveShadow = true;
-    cameraBodyGroup.add(faceplate);
-
-    const faceplateInset = new THREE.Mesh(
-      roundedBoxGeometry(3.72, 1.24, 0.028, 0.1, 12),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#b8afa2"), roughness: 0.92, metalness: 0.03 })
+    useImperativeHandle(
+      ref,
+      () => ({
+        trigger: () => triggerFnRef.current?.() ?? false,
+        triggerFlashOnly: () => triggerFlashOnlyFnRef.current?.(),
+        putBack: () => putBackFnRef.current?.() ?? Promise.resolve(),
+        setInteractionEnabled: (enabled: boolean) => setInteractionFnRef.current?.(enabled),
+      }),
+      []
     );
-    faceplateInset.position.set(0, 0.01, 1.085);
-    cameraBodyGroup.add(faceplateInset);
 
-    const grooveMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#8e867a"),
-      roughness: 0.94,
-      metalness: 0.02,
-    });
-    const frontGrooveTop = new THREE.Mesh(new THREE.BoxGeometry(3.56, 0.012, 0.012), grooveMaterial);
-    frontGrooveTop.position.set(0, 0.585, 1.102);
-    cameraBodyGroup.add(frontGrooveTop);
-    const frontGrooveBottom = new THREE.Mesh(new THREE.BoxGeometry(3.56, 0.012, 0.012), grooveMaterial);
-    frontGrooveBottom.position.set(0, -0.545, 1.102);
-    cameraBodyGroup.add(frontGrooveBottom);
-    const frontGrooveLeft = new THREE.Mesh(new THREE.BoxGeometry(0.012, 1.12, 0.012), grooveMaterial);
-    frontGrooveLeft.position.set(-1.78, 0.02, 1.102);
-    cameraBodyGroup.add(frontGrooveLeft);
-    const frontGrooveRight = new THREE.Mesh(new THREE.BoxGeometry(0.012, 1.12, 0.012), grooveMaterial);
-    frontGrooveRight.position.set(1.78, 0.02, 1.102);
-    cameraBodyGroup.add(frontGrooveRight);
+    useEffect(() => {
+      if (props.phase) phaseRef.current = props.phase;
+    }, [props.phase]);
 
-    const seamTop = new THREE.Mesh(
-      roundedBoxGeometry(4.32, 0.02, 1.7, 0.08, 10),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#b7aea2"), roughness: 0.86, metalness: 0.04 })
-    );
-    seamTop.position.set(0, 0.91, 0.09);
-    cameraBodyGroup.add(seamTop);
-    const topPlateGrooveFront = new THREE.Mesh(new THREE.BoxGeometry(3.84, 0.008, 0.012), grooveMaterial);
-    topPlateGrooveFront.position.set(0, 1.095, 0.56);
-    cameraBodyGroup.add(topPlateGrooveFront);
-    const topPlateGrooveRear = new THREE.Mesh(new THREE.BoxGeometry(3.84, 0.008, 0.012), grooveMaterial);
-    topPlateGrooveRear.position.set(0, 1.095, -0.48);
-    cameraBodyGroup.add(topPlateGrooveRear);
+    useEffect(() => {
+      if (Number.isFinite(props.timelineT)) timelineRef.current = props.timelineT as number;
+    }, [props.timelineT]);
 
-    const seamFront = new THREE.Mesh(
-      new THREE.BoxGeometry(3.96, 0.015, 0.02),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#a59d90"), roughness: 0.92, metalness: 0.03 })
-    );
-    seamFront.position.set(0, -0.08, 1.02);
-    cameraBodyGroup.add(seamFront);
+    useEffect(() => {
+      isInteractiveRef.current = !!props.isInteractive;
+    }, [props.isInteractive]);
 
-    const leftGrip = new THREE.Mesh(roundedBoxGeometry(0.42, 1.3, 1.54, 0.1, 12), rubberMaterial);
-    leftGrip.position.set(-2.02, 0.02, 0.16);
-    cameraBodyGroup.add(leftGrip);
+    useEffect(() => {
+      callbacksRef.current = {
+        onCaptureIntent: props.onCaptureIntent,
+        onPointerHoverChange: props.onPointerHoverChange,
+        onLensProject: props.onLensProject,
+        onReady: props.onReady,
+        onCaptureStart: props.onCaptureStart,
+        onFlash: props.onFlash,
+        onEjectDone: props.onEjectDone,
+        onRetractDone: props.onRetractDone,
+        onCardAnchorPx: props.onCardAnchorPx,
+        onStatusChange: props.onStatusChange,
+        onGlbStatus: props.onGlbStatus,
+        onDebug: props.onDebug,
+      };
+    }, [
+      props.onCaptureIntent,
+      props.onPointerHoverChange,
+      props.onLensProject,
+      props.onReady,
+      props.onCaptureStart,
+      props.onFlash,
+      props.onEjectDone,
+      props.onRetractDone,
+      props.onCardAnchorPx,
+      props.onStatusChange,
+      props.onGlbStatus,
+      props.onDebug,
+    ]);
 
-    const rightGrip = new THREE.Mesh(roundedBoxGeometry(0.42, 1.3, 1.54, 0.1, 12), rubberMaterial);
-    rightGrip.position.set(2.02, 0.02, 0.16);
-    cameraBodyGroup.add(rightGrip);
+    useEffect(() => {
+      const nonce = props.captureNonce ?? 0;
+      if (nonce !== captureNonceRef.current) {
+        captureNonceRef.current = nonce;
+        triggerFnRef.current?.();
+      }
+    }, [props.captureNonce]);
 
-    for (let i = 0; i < 4; i += 1) {
-      const y = -0.56 + i * 0.37;
-      const leftGripAccent = new THREE.Mesh(
-        new THREE.BoxGeometry(0.08, 0.2, 1.3),
-        new THREE.MeshStandardMaterial({ color: new THREE.Color("#161b22"), roughness: 0.98, metalness: 0.02 })
+    useEffect(() => {
+      const nonce = props.retractNonce ?? 0;
+      if (nonce !== retractNonceRef.current) {
+        retractNonceRef.current = nonce;
+        void putBackFnRef.current?.();
+      }
+    }, [props.retractNonce]);
+
+    useEffect(() => {
+      const mount = mountRef.current;
+      if (!mount) return;
+
+      THREE.ColorManagement.enabled = true;
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      renderer.setSize(mount.clientWidth, mount.clientHeight, false);
+      renderer.setClearColor(0x000000, 0);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.05;
+      renderer.shadowMap.enabled = false;
+      renderer.debug.checkShaderErrors = true;
+      renderer.domElement.style.position = "absolute";
+      renderer.domElement.style.inset = "0";
+      renderer.domElement.style.width = "100%";
+      renderer.domElement.style.height = "100%";
+      renderer.domElement.style.display = "block";
+      mount.appendChild(renderer.domElement);
+
+      const onContextLost = (event: Event) => {
+        event.preventDefault();
+        console.error("[contact] WEBGL CONTEXT LOST");
+      };
+      const onContextRestored = () => {
+        console.warn("[contact] WEBGL CONTEXT RESTORED - reload page");
+      };
+      renderer.domElement.addEventListener("webglcontextlost", onContextLost);
+      renderer.domElement.addEventListener("webglcontextrestored", onContextRestored);
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(FRAMING.heroFov, mount.clientWidth / mount.clientHeight, 0.01, 120);
+
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+      scene.environment = envRT.texture;
+
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x202020, 0.55);
+      const key = new THREE.DirectionalLight(0xffffff, 3.6);
+      key.position.set(3, 4, 5);
+      const rim = new THREE.DirectionalLight(0xdfe9ff, 2.0);
+      rim.position.set(-4, 2, -3);
+      scene.add(hemi, key, rim, key.target, rim.target);
+      console.info(
+        "[contact] scene init children",
+        scene.children.map((child) => `${child.type}:${child.name || "(unnamed)"}`)
       );
-      leftGripAccent.position.set(-1.83, y, 0.16);
-      cameraBodyGroup.add(leftGripAccent);
 
-      const rightGripAccent = new THREE.Mesh(
-        new THREE.BoxGeometry(0.08, 0.2, 1.3),
-        new THREE.MeshStandardMaterial({ color: new THREE.Color("#161b22"), roughness: 0.98, metalness: 0.02 })
-      );
-      rightGripAccent.position.set(1.83, y, 0.16);
-      cameraBodyGroup.add(rightGripAccent);
-    }
+      const rig = new THREE.Group();
+      rig.position.set(0, -0.03, 0);
+      rig.rotation.set(THREE.MathUtils.degToRad(2.8), THREE.MathUtils.degToRad(-1.5), THREE.MathUtils.degToRad(0.1));
+      scene.add(rig);
+      const cameraRoot = new THREE.Group();
+      cameraRoot.rotation.set(THREE.MathUtils.degToRad(8.2), THREE.MathUtils.degToRad(-2.1), THREE.MathUtils.degToRad(0.25));
+      rig.add(cameraRoot);
+      const modelRoot = new THREE.Group();
+      cameraRoot.add(modelRoot);
 
-    const topPlate = new THREE.Mesh(
-      new THREE.BoxGeometry(4.1, 0.12, 1.2),
-      trimMaterial
-    );
-    topPlate.position.set(0, 1.03, 0.08);
-    topPlate.castShadow = true;
-    cameraBodyGroup.add(topPlate);
+      const lensCenter = new THREE.Object3D();
+      const lensEdge = new THREE.Object3D();
+      const cardAnchor = new THREE.Object3D();
+      const slotGroup = new THREE.Group();
+      modelRoot.add(lensCenter, lensEdge, cardAnchor, slotGroup);
 
-    const topStrip = new THREE.Mesh(
-      new THREE.BoxGeometry(3.86, 0.2, 0.84),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#181c23"), roughness: 0.56, metalness: 0.14 })
-    );
-    topStrip.position.set(0, 1.08, -0.03);
-    cameraBodyGroup.add(topStrip);
+      const photo = createPhoto();
+      photo.visible = false;
+      slotGroup.add(photo);
 
-    const shutterModule = new THREE.Mesh(
-      new THREE.BoxGeometry(0.74, 0.18, 0.5),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#252b35"), roughness: 0.52, metalness: 0.2 })
-    );
-    shutterModule.position.set(1.45, 1.15, 0.2);
-    cameraBodyGroup.add(shutterModule);
+      const slotStart = new THREE.Vector3();
+      const slotDock = new THREE.Vector3();
+      const retractFrom = new THREE.Vector3();
+      const photoPose = new THREE.Vector3();
+      const setPhotoPose = (position: THREE.Vector3, progress: number) => {
+        photo.position.copy(position);
+        photo.rotation.set(mix(-0.064, -0.03, progress), 0, mix(0.002, -0.001, progress));
+      };
+      setPhotoPose(slotStart, 0);
 
-    const shutterButton = new THREE.Mesh(
-      roundedBoxGeometry(0.31, 0.13, 0.2, 0.05, 8),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#2f333b"), roughness: 0.42, metalness: 0.24 })
-    );
-    shutterButton.position.set(1.72, 1.2, 0.2);
-    cameraBodyGroup.add(shutterButton);
+      const debugState: DebugPayload = {
+        glbStatus: "loading",
+        url: GLB_URL,
+        totalMeshes: 0,
+        visibleMeshes: 0,
+        hiddenMeshes: 0,
+        pinkOverrideApplied: false,
+        propHideApplied: false,
+        componentCount: 0,
+        keptTris: 0,
+        totalTris: 0,
+        keptRatio: 0,
+        isolateApplied: false,
+        cardAnchorProjected: false,
+        slotCreated: true,
+        photoCreated: true,
+        ejectState: "idle",
+        ejectT: 0,
+      };
+      let lastDebugEmit = 0;
+      const emitDebug = (force = false) => {
+        const cb = callbacksRef.current.onDebug;
+        if (!cb) return;
+        const now = performance.now();
+        if (!force && now - lastDebugEmit < 250) return;
+        lastDebugEmit = now;
+        cb({ ...debugState });
+      };
 
-    const viewfinderBump = new THREE.Mesh(
-      new THREE.BoxGeometry(0.62, 0.12, 0.22),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#343d47"), roughness: 0.6, metalness: 0.16 })
-    );
-    viewfinderBump.position.set(-1.32, 1.02, 0.24);
-    cameraBodyGroup.add(viewfinderBump);
+      const emitGlbStatus = (s: { status: "loading" | "loaded" | "error"; url: string; message?: string }) => {
+        callbacksRef.current.onGlbStatus?.(s);
+        debugState.glbStatus = s.status;
+        debugState.url = s.url;
+        debugState.message = s.message;
+        emitDebug(true);
+      };
 
-    const viewfinderFrame = new THREE.Mesh(
-      roundedBoxGeometry(0.43, 0.09, 0.08, 0.035, 8),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#20262f"), roughness: 0.5, metalness: 0.24 })
-    );
-    viewfinderFrame.position.set(-1.31, 1.018, 0.36);
-    cameraBodyGroup.add(viewfinderFrame);
+      let hasGlb = false;
+      let loadedModel: THREE.Object3D | null = null;
+      const bounds = new THREE.Box3();
+      const boundsCenter = new THREE.Vector3();
+      const boundsSize = new THREE.Vector3();
+      const worldCenter = new THREE.Vector3();
+      let maxDim = 1;
 
-    const viewfinderGlass = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.3, 0.11),
-      new THREE.MeshPhysicalMaterial({
-        color: new THREE.Color("#8fa4bc"),
-        transmission: 0.76,
-        thickness: 0.045,
-        ior: 1.43,
-        roughness: 0.08,
-        metalness: 0,
-        transparent: true,
-        opacity: 0.72,
-      })
-    );
-    viewfinderGlass.position.set(-1.31, 1.02, 0.402);
-    cameraBodyGroup.add(viewfinderGlass);
+      let ejectState: "idle" | "delayed" | "ejecting" | "done" | "retracting" = "idle";
+      let delayedStartMs = 0;
+      let ejectStartMs = 0;
+      let retractStartMs = 0;
+      let ejectDoneSent = false;
+      const retractResolvers: Array<() => void> = [];
+      const resolveRetracts = () => {
+        while (retractResolvers.length > 0) retractResolvers.shift()?.();
+      };
 
-    const topSlot = new THREE.Mesh(
-      new THREE.BoxGeometry(1.86, 0.03, 0.25),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#252525"), roughness: 0.46, metalness: 0.08 })
-    );
-    topSlot.position.set(0, ANCHORS.topSlotY, ANCHORS.topSlotZ);
-    cameraBodyGroup.add(topSlot);
-
-    const slotWallMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#0b0b0b"),
-      roughness: 0.9,
-      metalness: 0.02,
-    });
-    const slotCavity = new THREE.Group();
-    slotCavity.position.set(0, ANCHORS.topSlotY - 0.004, ANCHORS.topSlotZ - 0.02);
-    cameraBodyGroup.add(slotCavity);
-
-    const slotW = 1.62;
-    const slotH = 0.12;
-    const slotD = 0.34;
-    const slotT = 0.018;
-    const slotLeftWall = new THREE.Mesh(new THREE.BoxGeometry(slotT, slotH, slotD), slotWallMaterial);
-    slotLeftWall.position.set(-(slotW * 0.5) + slotT * 0.5, 0, -slotD * 0.5);
-    slotCavity.add(slotLeftWall);
-
-    const slotRightWall = new THREE.Mesh(new THREE.BoxGeometry(slotT, slotH, slotD), slotWallMaterial);
-    slotRightWall.position.set((slotW * 0.5) - slotT * 0.5, 0, -slotD * 0.5);
-    slotCavity.add(slotRightWall);
-
-    const slotTopWall = new THREE.Mesh(new THREE.BoxGeometry(slotW - slotT * 2, slotT, slotD), slotWallMaterial);
-    slotTopWall.position.set(0, (slotH * 0.5) - slotT * 0.5, -slotD * 0.5);
-    slotCavity.add(slotTopWall);
-
-    const slotBottomWall = new THREE.Mesh(new THREE.BoxGeometry(slotW - slotT * 2, slotT, slotD), slotWallMaterial);
-    slotBottomWall.position.set(0, -(slotH * 0.5) + slotT * 0.5, -slotD * 0.5);
-    slotCavity.add(slotBottomWall);
-
-    const slotBackWall = new THREE.Mesh(new THREE.BoxGeometry(slotW - slotT * 2, slotH - slotT * 2, slotT), slotWallMaterial);
-    slotBackWall.position.set(0, 0, -slotD + slotT * 0.5);
-    slotCavity.add(slotBackWall);
-
-    const topSlotLip = new THREE.Mesh(
-      new THREE.BoxGeometry(1.98, 0.085, 0.21),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#c8beaf"), roughness: 0.8, metalness: 0.04 })
-    );
-    topSlotLip.position.set(0, ANCHORS.topSlotY + 0.034, ANCHORS.topSlotZ + 0.07);
-    topSlotLip.castShadow = true;
-    cameraBodyGroup.add(topSlotLip);
-
-    const bottomBand = new THREE.Mesh(
-      new THREE.BoxGeometry(3.66, 0.04, 0.08),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#d2cabe"), roughness: 0.82, metalness: 0.02 })
-    );
-    bottomBand.position.set(0, -0.905, ANCHORS.frontFaceZ - 0.025);
-    cameraBodyGroup.add(bottomBand);
-
-    const bottomSlot = new THREE.Mesh(
-      new THREE.BoxGeometry(1.74, 0.03, 0.22),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#1f1f1f"), roughness: 0.48, metalness: 0.08 })
-    );
-    bottomSlot.position.set(0, -0.95, ANCHORS.frontFaceZ);
-    cameraBodyGroup.add(bottomSlot);
-
-    const screwMaterial = darkMetalMaterial.clone();
-    const screwPositions = [
-      new THREE.Vector3(-1.72, 0.58, 1.1),
-      new THREE.Vector3(1.72, 0.58, 1.1),
-      new THREE.Vector3(-1.72, -0.66, 1.1),
-      new THREE.Vector3(1.72, -0.66, 1.1),
-    ];
-    screwPositions.forEach((pos, index) => {
-      const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.03, 20), screwMaterial);
-      screw.rotation.x = Math.PI * 0.5;
-      screw.position.copy(pos);
-      cameraBodyGroup.add(screw);
-
-      const screwRecess = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.064, 0.064, 0.012, 24),
-        new THREE.MeshStandardMaterial({ color: new THREE.Color("#949083"), roughness: 0.88, metalness: 0.05 })
-      );
-      screwRecess.rotation.x = Math.PI * 0.5;
-      screwRecess.position.set(pos.x, pos.y, pos.z - 0.009);
-      cameraBodyGroup.add(screwRecess);
-
-      const screwSlot = new THREE.Mesh(
-        new THREE.BoxGeometry(0.058, 0.008, 0.01),
-        new THREE.MeshStandardMaterial({ color: new THREE.Color("#1a1f24"), roughness: 0.9, metalness: 0.05 })
-      );
-      screwSlot.position.set(pos.x, pos.y, pos.z + 0.016 + (index % 2 === 0 ? 0.0005 : -0.0005));
-      cameraBodyGroup.add(screwSlot);
-    });
-
-    const lensGroup = new THREE.Group();
-    lensGroup.position.set(ANCHORS.lensOffsetX, 0.06, 1.08);
-    cameraBodyGroup.add(lensGroup);
-
-    const lensMount = new THREE.Mesh(
-      new THREE.TorusGeometry(0.83, 0.026, 24, 120),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#92897d"), roughness: 0.86, metalness: 0.08 })
-    );
-    lensMount.position.set(ANCHORS.lensOffsetX, 0.06, 1.078);
-    cameraBodyGroup.add(lensMount);
-
-    const lensOuter = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.675, 0.675, 0.48, 112),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#0b0d11"), roughness: 0.42, metalness: 0.58 })
-    );
-    lensOuter.position.z = -0.08;
-    lensOuter.rotation.x = Math.PI * 0.5;
-    lensGroup.add(lensOuter);
-
-    const lensRimMaterial = darkMetalMaterial.clone();
-    lensRimMaterial.color = new THREE.Color("#141414");
-    lensRimMaterial.roughness = 0.42;
-    lensRimMaterial.metalness = 0.66;
-    const lensRim = new THREE.Mesh(new THREE.CylinderGeometry(0.705, 0.705, 0.036, 96), lensRimMaterial);
-    lensRim.position.z = 0.152;
-    lensRim.rotation.x = Math.PI * 0.5;
-    lensGroup.add(lensRim);
-
-    const knurlBase = new THREE.Mesh(
-      new THREE.TorusGeometry(0.61, 0.026, 24, 112),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#151a20"), roughness: 0.36, metalness: 0.4 })
-    );
-    knurlBase.position.z = 0.06;
-    lensGroup.add(knurlBase);
-
-    const knurlGroup = new THREE.Group();
-    knurlGroup.position.z = 0.06;
-    lensGroup.add(knurlGroup);
-    for (let i = 0; i < 52; i += 1) {
-      const a = (i / 52) * Math.PI * 2;
-      const ridge = new THREE.Mesh(
-        new THREE.BoxGeometry(0.018, 0.056, 0.026),
-        new THREE.MeshStandardMaterial({
-          color: new THREE.Color(i % 2 === 0 ? "#212730" : "#1b2129"),
-          roughness: 0.44,
-          metalness: 0.22,
-        })
-      );
-      ridge.position.set(Math.cos(a) * 0.612, Math.sin(a) * 0.612, 0);
-      ridge.rotation.z = a + Math.PI * 0.5;
-      knurlGroup.add(ridge);
-    }
-
-    const lensBarrelA = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.49, 0.49, 0.19, 112),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#090b0e"), roughness: 0.28, metalness: 0.24 })
-    );
-    lensBarrelA.position.z = -0.02;
-    lensBarrelA.rotation.x = Math.PI * 0.5;
-    lensGroup.add(lensBarrelA);
-
-    const lensBarrelB = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.37, 0.37, 0.18, 112),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#07090b"), roughness: 0.3, metalness: 0.2 })
-    );
-    lensBarrelB.position.z = -0.11;
-    lensBarrelB.rotation.x = Math.PI * 0.5;
-    lensGroup.add(lensBarrelB);
-
-    const lensBarrelC = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.28, 0.25, 0.2, 112),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color("#050709"), roughness: 0.46, metalness: 0.1 })
-    );
-    lensBarrelC.position.z = -0.205;
-    lensBarrelC.rotation.x = Math.PI * 0.5;
-    lensGroup.add(lensBarrelC);
-
-    const apertureTexture = createApertureTexture();
-    const apertureDisc = new THREE.Mesh(
-      new THREE.CircleGeometry(0.192, 84),
-      new THREE.MeshBasicMaterial({ map: apertureTexture || undefined, transparent: true, opacity: 0.56 })
-    );
-    apertureDisc.position.z = -0.234;
-    lensGroup.add(apertureDisc);
-
-    const lensCore = new THREE.Mesh(new THREE.CircleGeometry(0.176, 96), new THREE.MeshBasicMaterial({ color: "#020202" }));
-    lensCore.position.z = -0.248;
-    lensGroup.add(lensCore);
-
-    const lensGlass = new THREE.Mesh(
-      new THREE.CircleGeometry(0.29, 96),
-      new THREE.MeshPhysicalMaterial({
-        color: new THREE.Color("#7a8797"),
-        roughness: 0.04,
-        metalness: 0,
-        transmission: 0.9,
-        thickness: 0.12,
-        ior: 1.45,
-        transparent: true,
-        opacity: 0.76,
-      })
-    );
-    lensGlass.position.z = 0.108;
-    lensGroup.add(lensGlass);
-
-    const rearGlass = new THREE.Mesh(
-      new THREE.CircleGeometry(0.235, 84),
-      new THREE.MeshPhysicalMaterial({
-        color: new THREE.Color("#55667d"),
-        roughness: 0.08,
-        metalness: 0,
-        transmission: 0.42,
-        thickness: 0.1,
-        ior: 1.45,
-        transparent: true,
-        opacity: 0.28,
-      })
-    );
-    rearGlass.position.z = -0.05;
-    lensGroup.add(rearGlass);
-
-    const lensHighlightArc = new THREE.Mesh(
-      new THREE.RingGeometry(0.256, 0.272, 96, 1, Math.PI * 0.2, Math.PI * 0.72),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color("#a8bed8"), transparent: true, opacity: 0.055, side: THREE.DoubleSide })
-    );
-    lensHighlightArc.position.z = 0.138;
-    lensHighlightArc.rotation.z = Math.PI * 0.08;
-    lensGroup.add(lensHighlightArc);
-
-    const lensReflect = new THREE.Mesh(
-      new THREE.CircleGeometry(0.105, 64),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color("#b2c4dc"), transparent: true, opacity: 0.075 })
-    );
-    lensReflect.position.set(-0.05, 0.04, 0.11);
-    lensGroup.add(lensReflect);
-
-    const lensCenter = new THREE.Object3D();
-    lensCenter.position.set(0, 0, 0.17);
-    lensGroup.add(lensCenter);
-
-    const lensEdge = new THREE.Object3D();
-    lensEdge.position.set(0.72, 0, 0.17);
-    lensGroup.add(lensEdge);
-
-    const photo = createPolaroid();
-    movingPartsGroup.add(photo);
-    const topStartAnchor = new THREE.Vector3(0, ANCHORS.topSlotY - 0.14, ANCHORS.topSlotZ - 0.1);
-    const topDockAnchor = new THREE.Vector3(0, ANCHORS.topSlotY + 1.02, ANCHORS.topSlotZ - 0.02);
-    photo.position.copy(topStartAnchor);
-    photo.rotation.set(-0.062, 0, 0.002);
-    photo.visible = false;
-
-    const topEjectPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -ANCHORS.topSlotY);
-    photo.traverse((node) => {
-      const mesh = node as THREE.Mesh;
-      const holder = mesh as { material?: THREE.Material | THREE.Material[] };
-      if (!holder.material) return;
-      if (Array.isArray(holder.material)) {
-        holder.material.forEach((material) => {
-          const clipMaterial = material as THREE.Material & { clippingPlanes?: THREE.Plane[] };
-          clipMaterial.clippingPlanes = [topEjectPlane];
+      const retractPhoto = () =>
+        new Promise<void>((resolve) => {
+          if (ejectState === "idle") return resolve();
+          retractResolvers.push(resolve);
+          retractFrom.copy(photo.position);
+          retractStartMs = performance.now();
+          ejectState = "retracting";
+          callbacksRef.current.onStatusChange?.("Retracting");
         });
-      } else {
-        const clipMaterial = holder.material as THREE.Material & { clippingPlanes?: THREE.Plane[] };
-        clipMaterial.clippingPlanes = [topEjectPlane];
-      }
-    });
 
-    const setPhotoPose = (y: number, z: number, progress: number, settleTilt = 0) => {
-      const p = clamp01(progress);
-      photo.position.set(topDockAnchor.x, y, z);
-      photo.rotation.set(mix(-0.062, -0.032, p) + settleTilt, 0, mix(0.002, -0.001, p));
-    };
+      triggerFnRef.current = () => {
+        if (!hasGlb) return false;
+        if (ejectState === "delayed" || ejectState === "ejecting" || ejectState === "retracting") return false;
+        delayedStartMs = performance.now();
+        ejectState = "delayed";
+        ejectDoneSent = false;
+        callbacksRef.current.onCaptureStart?.();
+        callbacksRef.current.onFlash?.();
+        callbacksRef.current.onStatusChange?.("Capturing");
+        return true;
+      };
+      triggerFlashOnlyFnRef.current = () => {
+        // no-op by design for hero compatibility
+      };
+      putBackFnRef.current = () => retractPhoto();
+      setInteractionFnRef.current = (enabled: boolean) => {
+        isInteractiveRef.current = enabled;
+      };
 
-    setPhotoPose(topStartAnchor.y, topStartAnchor.z, 0);
+      emitGlbStatus({ status: "loading", url: GLB_URL });
+      const loader = new GLTFLoader();
+      loader.load(
+        GLB_URL,
+        (gltf) => {
+          loadedModel = gltf.scene;
+          modelRoot.add(loadedModel);
 
-    cameraBodyGroup.traverse((node) => {
-      const mesh = node as THREE.Mesh;
-      const holder = mesh as { material?: THREE.Material | THREE.Material[] };
-      if (!mesh.geometry || !holder.material) return;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-    });
-
-    const captureHitTarget = new THREE.Mesh(
-      new THREE.BoxGeometry(5.3, 3.1, 2.7),
-      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
-    );
-    captureHitTarget.position.set(0, 0.1, 1.02);
-    cameraBodyGroup.add(captureHitTarget);
-
-    const interactiveTargets = [captureHitTarget, body, shutterButton, shutterModule, lensOuter, lensRim];
-    const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
-    let hoverState = false;
-    const dom = renderer.domElement;
-
-    const setHoverState = (next: boolean) => {
-      if (hoverState === next) return;
-      hoverState = next;
-      dom.style.cursor = next && isInteractiveRef.current ? "pointer" : "default";
-      callbacksRef.current.onPointerHoverChange?.(next && isInteractiveRef.current);
-    };
-
-    const intersectsInteractive = (event: PointerEvent) => {
-      const rect = dom.getBoundingClientRect();
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(interactiveTargets, true);
-      return hit.length > 0;
-    };
-
-    const onPointerMove = (event: PointerEvent) => {
-      if (!isInteractiveRef.current) {
-        setHoverState(false);
-        return;
-      }
-      setHoverState(intersectsInteractive(event));
-    };
-
-    const onPointerLeave = () => {
-      setHoverState(false);
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 || !isInteractiveRef.current) return;
-      if (!intersectsInteractive(event)) return;
-      callbacksRef.current.onCaptureIntent?.();
-    };
-
-    dom.addEventListener("pointermove", onPointerMove);
-    dom.addEventListener("pointerleave", onPointerLeave);
-    dom.addEventListener("pointerdown", onPointerDown);
-
-    const heroTarget = new THREE.Vector3();
-    const heroPos = new THREE.Vector3();
-    const macroTarget = new THREE.Vector3();
-    const macroPos = new THREE.Vector3();
-    const lookTarget = new THREE.Vector3();
-    const lensQuat = new THREE.Quaternion();
-    const lensNormal = new THREE.Vector3();
-    const lensRight = new THREE.Vector3();
-    const lensUp = new THREE.Vector3();
-    const lensWorld = new THREE.Vector3();
-    const lensEdgeWorld = new THREE.Vector3();
-    const photoAnchorWorld = new THREE.Vector3();
-    const projectedCenter = new THREE.Vector3();
-    const projectedEdge = new THREE.Vector3();
-    const projectedPhotoAnchor = new THREE.Vector3();
-    const midPos = new THREE.Vector3();
-    const midTarget = new THREE.Vector3();
-
-    let readyNotified = false;
-    let raf = 0;
-
-    const refreshHeroFrame = () => {
-      const aspect = Math.max(0.5, mount.clientWidth / Math.max(1, mount.clientHeight));
-      const frame = computeFramedDistance(cameraBodyGroup, camera, aspect);
-      heroTarget.copy(frame.center).add(new THREE.Vector3(0, 0.06, 0));
-      heroPos.copy(heroTarget).add(new THREE.Vector3(0, 0.3, frame.distance * FRAMING.heroDistanceScale));
-    };
-
-    const refreshMacroFrame = () => {
-      lensCenter.getWorldPosition(lensWorld);
-      lensGroup.getWorldQuaternion(lensQuat);
-      lensNormal.set(0, 0, 1).applyQuaternion(lensQuat).normalize();
-      lensRight.set(1, 0, 0).applyQuaternion(lensQuat).normalize();
-      lensUp.set(0, 1, 0).applyQuaternion(lensQuat).normalize();
-      macroTarget.copy(lensWorld).addScaledVector(lensNormal, -0.3).addScaledVector(lensUp, 0.01);
-      macroPos
-        .copy(lensWorld)
-        .addScaledVector(lensNormal, FRAMING.macroDistance)
-        .addScaledVector(lensRight, 0.01)
-        .addScaledVector(lensUp, 0.012);
-    };
-
-    const onResize = () => {
-      renderer.setSize(mount.clientWidth, mount.clientHeight);
-      camera.aspect = mount.clientWidth / mount.clientHeight;
-      camera.updateProjectionMatrix();
-      refreshHeroFrame();
-      refreshMacroFrame();
-    };
-
-    window.addEventListener("resize", onResize);
-    onResize();
-
-    const tick = () => {
-      const now = performance.now();
-      const t = Number.isFinite(timelineRef.current) ? timelineRef.current : 0;
-
-      const closeupBlend = smoothstep(1.7, BEATS.closeupEnd, t);
-      const dollyBlend = smoothstep(BEATS.closeupEnd, BEATS.readyAt, t);
-
-      refreshMacroFrame();
-      midPos.lerpVectors(macroPos, heroPos, closeupBlend * 0.72);
-      camera.position.lerpVectors(midPos, heroPos, dollyBlend);
-      midTarget.lerpVectors(macroTarget, heroTarget, closeupBlend * 0.76);
-      lookTarget.lerpVectors(midTarget, heroTarget, dollyBlend);
-      camera.fov = mix(FRAMING.macroFov, FRAMING.heroFov, clamp01(closeupBlend * 0.82 + dollyBlend * 0.18));
-      camera.updateProjectionMatrix();
-      camera.lookAt(lookTarget);
-
-      if (!readyNotified && t >= BEATS.readyAt) {
-        readyNotified = true;
-        callbacksRef.current.onReady?.();
-        callbacksRef.current.onStatusChange?.("Ready");
-      }
-
-      let shutterPress = 0;
-      if (captureStartMsRef.current !== null) {
-        const localCaptureElapsed = Math.max(0, (now - captureStartMsRef.current) / 1000);
-        shutterPress = smoothstep(0.01, 0.08, localCaptureElapsed) * (1 - smoothstep(0.11, 0.2, localCaptureElapsed));
-
-        if (localCaptureElapsed < PHOTO.travelDelay) {
-          setPhotoPose(topStartAnchor.y, topStartAnchor.z, 0);
-          photo.visible = false;
-        } else {
-          const motionLinear = clamp01((localCaptureElapsed - PHOTO.travelDelay) / PHOTO.travelDuration);
-          const travelRaw = smoothstep(PHOTO.travelDelay, PHOTO.travelDelay + PHOTO.travelDuration, localCaptureElapsed);
-
-          let ejectT = 0;
-          if (motionLinear < 0.22) {
-            const stuck = easeInQuad(motionLinear / 0.22);
-            ejectT = 0.085 * stuck;
-          } else {
-            const release = easeOutCubic((motionLinear - 0.22) / 0.78);
-            ejectT = 0.085 + 0.915 * release;
+          loadedModel.updateWorldMatrix(true, true);
+          const preBox = new THREE.Box3().setFromObject(loadedModel);
+          const preCenter = preBox.getCenter(new THREE.Vector3());
+          const preSize = preBox.getSize(new THREE.Vector3());
+          const preMaxDim = Math.max(preSize.x, preSize.y, preSize.z);
+          if (Number.isFinite(preMaxDim) && preMaxDim > 0) {
+            loadedModel.position.sub(preCenter);
+            loadedModel.scale.setScalar(TARGET_SIZE / preMaxDim);
           }
 
-          const settleTime = Math.max(0, localCaptureElapsed - (PHOTO.travelDelay + PHOTO.travelDuration));
-          const overshootY =
-            smoothstep(0.88, 1, travelRaw) *
-            Math.sin(settleTime * 18) *
-            Math.exp(-9 * settleTime) *
-            0.013;
-          const overshootZ = -overshootY * 0.22;
-          const settleTilt = overshootY * 0.2;
-          const travelY = mix(topStartAnchor.y, topDockAnchor.y, ejectT) + overshootY;
-          const travelZ = mix(topStartAnchor.z, topDockAnchor.z, ejectT) + overshootZ;
-          setPhotoPose(travelY, travelZ, ejectT, settleTilt);
+          loadedModel.updateWorldMatrix(true, true);
+          const sceneBox = new THREE.Box3().setFromObject(loadedModel);
+          const sceneCenter = sceneBox.getCenter(new THREE.Vector3());
+          const sceneSize = sceneBox.getSize(new THREE.Vector3());
+          const sceneVolume = Math.max(1e-8, sceneSize.x * sceneSize.y * sceneSize.z);
+          bounds.copy(sceneBox);
+          boundsCenter.copy(sceneCenter);
+          boundsSize.copy(sceneSize);
+          maxDim = Math.max(sceneSize.x, sceneSize.y, sceneSize.z);
+
+          const lensRadius = Math.max(0.03 * maxDim, 0.08 * maxDim);
+          lensCenter.position.set(boundsCenter.x, boundsCenter.y + 0.06 * boundsSize.y, bounds.max.z - 0.08 * boundsSize.z);
+          lensEdge.position.copy(lensCenter.position).add(new THREE.Vector3(lensRadius, 0, 0));
+          cardAnchor.position.set(boundsCenter.x + 0.06 * boundsSize.x, bounds.min.y + 0.56 * boundsSize.y, bounds.max.z - 0.1 * boundsSize.z);
+          slotGroup.position.set(boundsCenter.x, bounds.min.y + 0.34 * boundsSize.y, bounds.max.z - 0.06 * boundsSize.z);
+
+          const photoW = 0.58 * boundsSize.x;
+          const photoH = photoW * 1.05;
+          photo.scale.set(photoW / 0.56, photoH / 0.72, Math.max(0.4, (0.01 * boundsSize.z) / 0.012));
+          slotStart.set(0, -0.22 * photoH, -0.06 * boundsSize.z);
+          slotDock.set(0, slotStart.y + 0.78 * photoH, slotStart.z + 0.08 * boundsSize.z);
+          setPhotoPose(slotStart, 0);
+          photo.visible = false;
+
+          let meshCount = 0;
+          let visibleMeshes = 0;
+          let hiddenCount = 0;
+          const hiddenByHeuristic: string[] = [];
+          const nearBlackWide: string[] = [];
+          const tmpBox = new THREE.Box3();
+          const tmpSize = new THREE.Vector3();
+          const tmpCenter = new THREE.Vector3();
+          const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+
+          loadedModel.traverse((node) => {
+            if (!(node instanceof THREE.Mesh)) return;
+            meshCount += 1;
+            if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+            tmpBox.setFromObject(node);
+            tmpBox.getCenter(tmpCenter);
+            tmpBox.getSize(tmpSize);
+            const meshVol = Math.max(0, tmpSize.x * tmpSize.y * tmpSize.z);
+            const nameLower = (node.name || "").toLowerCase();
+            const farRight = tmpCenter.x > sceneCenter.x + 0.3 * sceneSize.x;
+            const farLeft = tmpCenter.x < sceneCenter.x - 0.35 * sceneSize.x;
+            const lowAndFar = tmpCenter.y < sceneCenter.y - 0.15 * sceneSize.y && (farRight || farLeft);
+            const byName = /pack|stack|photo|papers|plug|cord|cable/i.test(nameLower);
+            const notHuge = meshVol < 0.18 * sceneVolume;
+            const shouldHide = (farRight || farLeft || lowAndFar || byName) && notHuge;
+            if (shouldHide) {
+              node.visible = false;
+              hiddenByHeuristic.push(node.name || "(unnamed-mesh)");
+              hiddenCount += 1;
+              console.info(
+                "[contact] HIDE",
+                node.name || "(unnamed)",
+                "center",
+                tmpCenter.toArray().map((n) => +n.toFixed(3))
+              );
+            }
+
+            const oldMats = Array.isArray(node.material) ? node.material : [node.material];
+            const newMats = oldMats.map((m) => simplifyMaterial(m, maxAnisotropy));
+            node.material = Array.isArray(node.material) ? newMats : newMats[0];
+            if (!node.geometry.attributes.normal) node.geometry.computeVertexNormals();
+            node.castShadow = false;
+            node.receiveShadow = false;
+            if (node.visible) visibleMeshes += 1;
+
+            for (const material of newMats) {
+              if (material.map) {
+                setColorMapSpace(material.map);
+                material.map.anisotropy = Math.min(8, maxAnisotropy);
+                material.map.needsUpdate = true;
+              }
+              if (material.emissiveMap) {
+                setColorMapSpace(material.emissiveMap);
+                material.emissiveMap.needsUpdate = true;
+              }
+              material.needsUpdate = true;
+              const c = material.color;
+              const isNearBlack = c.r < 0.08 && c.g < 0.08 && c.b < 0.08;
+              const isWide = tmpSize.x > sceneSize.x * 0.5;
+              if (isNearBlack && isWide) {
+                nearBlackWide.push(node.name || "(unnamed-mesh)");
+              }
+            }
+            oldMats.forEach((m) => m.dispose());
+          });
+
+          debugState.totalMeshes = meshCount;
+          debugState.visibleMeshes = visibleMeshes;
+          debugState.hiddenMeshes = Math.max(0, meshCount - visibleMeshes);
+          debugState.lensFound = true;
+          debugState.lensCenter = [lensCenter.position.x, lensCenter.position.y, lensCenter.position.z];
+          debugState.lensRadius = lensRadius;
+          debugState.propHideApplied = hiddenByHeuristic.length > 0;
+          console.info("[contact] hiddenCount", hiddenCount);
+          if (hiddenCount === 0) {
+            console.warn("[contact] hiddenCount=0 (no detachable accessory nodes matched heuristics)");
+          }
+          if (hiddenByHeuristic.length > 0) {
+            console.info("[contact] hidden accessory props", hiddenByHeuristic);
+          }
+          if (nearBlackWide.length > 0) {
+            console.info("[contact] near-black wide meshes (potential slab)", nearBlackWide);
+          }
+
+          hasGlb = true;
+          loadedModel.localToWorld(worldCenter.copy(boundsCenter));
+          key.target.position.copy(worldCenter);
+          rim.target.position.copy(worldCenter);
+          emitGlbStatus({ status: "loaded", url: GLB_URL });
+          emitDebug(true);
+          console.info("[contact] GLB loaded", GLB_URL, "meshes:", meshCount, "materials simplified");
+        },
+        undefined,
+        (err) => {
+          const message =
+            err && typeof err === "object" && "message" in err
+              ? String((err as { message?: unknown }).message)
+              : String(err);
+          hasGlb = false;
+          debugState.message = message;
+          emitGlbStatus({ status: "error", url: GLB_URL, message });
+          console.error("[contact] GLB load failed", GLB_URL, err);
+        }
+      );
+
+      const hitTarget = new THREE.Mesh(
+        new THREE.BoxGeometry(2.2, 1.8, 2.2),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+      );
+      hitTarget.position.set(0, 0.1, 0.6);
+      cameraRoot.add(hitTarget);
+
+      const interactiveTargets: THREE.Object3D[] = [hitTarget, modelRoot];
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      const dom = renderer.domElement;
+      let hover = false;
+      const setHover = (next: boolean) => {
+        if (hover === next) return;
+        hover = next;
+        dom.style.cursor = next && isInteractiveRef.current ? "pointer" : "default";
+        callbacksRef.current.onPointerHoverChange?.(next && isInteractiveRef.current);
+      };
+      const hitInteractive = (event: PointerEvent) => {
+        const rect = dom.getBoundingClientRect();
+        pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        return raycaster.intersectObjects(interactiveTargets, true).length > 0;
+      };
+      const onPointerMove = (event: PointerEvent) => {
+        if (!isInteractiveRef.current) return setHover(false);
+        setHover(hitInteractive(event));
+      };
+      const onPointerLeave = () => setHover(false);
+      const onPointerDown = (event: PointerEvent) => {
+        if (event.button !== 0 || !isInteractiveRef.current) return;
+        if (!hitInteractive(event)) return;
+        callbacksRef.current.onCaptureIntent?.();
+      };
+      dom.addEventListener("pointermove", onPointerMove);
+      dom.addEventListener("pointerleave", onPointerLeave);
+      dom.addEventListener("pointerdown", onPointerDown);
+
+      const heroPos = new THREE.Vector3();
+      const heroTarget = new THREE.Vector3();
+      const macroPos = new THREE.Vector3();
+      const macroTarget = new THREE.Vector3();
+      const midPos = new THREE.Vector3();
+      const midTarget = new THREE.Vector3();
+      const lookTarget = new THREE.Vector3();
+      const heroSettleFromPos = new THREE.Vector3();
+      const heroSettleToPos = new THREE.Vector3();
+      const heroSettleFromLook = new THREE.Vector3();
+      const heroSettleToLook = new THREE.Vector3();
+      const heroSettleLook = new THREE.Vector3();
+      const lensWorld = new THREE.Vector3();
+      const lensEdgeWorld = new THREE.Vector3();
+      const cardWorld = new THREE.Vector3();
+      const projectedCenter = new THREE.Vector3();
+      const projectedEdge = new THREE.Vector3();
+      const projectedCard = new THREE.Vector3();
+
+      let heroSettleStartMs = 0;
+      let heroSettleActive = false;
+      let readyNotified = false;
+      let raf = 0;
+
+      const onResize = () => {
+        const w = mount.clientWidth;
+        const h = Math.max(1, mount.clientHeight);
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      };
+      window.addEventListener("resize", onResize);
+      onResize();
+
+      const updatePhoto = (now: number) => {
+        if (phaseRef.current === "retracting" && ejectState !== "idle" && ejectState !== "retracting") {
+          void retractPhoto();
+        }
+        if (ejectState === "delayed") {
+          debugState.ejectState = "delayed";
+          debugState.ejectT = clamp01((now - delayedStartMs) / EJECT_DELAY_MS);
+          setPhotoPose(slotStart, 0);
+          photo.visible = false;
+          if (now - delayedStartMs >= EJECT_DELAY_MS) {
+            ejectState = "ejecting";
+            ejectStartMs = now;
+            callbacksRef.current.onStatusChange?.("Ejecting");
+          }
+          return;
+        }
+        if (ejectState === "ejecting") {
+          const t = clamp01((now - ejectStartMs) / EJECT_DUR_MS);
+          const eased = easeInOutCubic(t);
+          debugState.ejectState = "ejecting";
+          debugState.ejectT = t;
+          photoPose.lerpVectors(slotStart, slotDock, eased);
+          setPhotoPose(photoPose, eased);
           photo.visible = true;
-
-          if (travelRaw >= 1 && !photoDockedRef.current) {
-            photoDockedRef.current = true;
-            callbacksRef.current.onEjectDone?.();
-            callbacksRef.current.onStatusChange?.("Connected");
+          if (t >= 1) {
+            ejectState = "done";
+            if (!ejectDoneSent) {
+              ejectDoneSent = true;
+              callbacksRef.current.onEjectDone?.();
+              callbacksRef.current.onStatusChange?.("Connected");
+            }
           }
-
-          if (photoDockedRef.current) {
-            captureStartMsRef.current = null;
-            setPhotoPose(topDockAnchor.y, topDockAnchor.z, 1);
-            photo.visible = true;
+          return;
+        }
+        if (ejectState === "retracting") {
+          const t = clamp01((now - retractStartMs) / PHOTO_RETRACT_MS);
+          const eased = easeInOutCubic(t);
+          debugState.ejectState = "retracting";
+          debugState.ejectT = t;
+          photoPose.lerpVectors(retractFrom, slotStart, eased);
+          setPhotoPose(photoPose, 1 - eased);
+          photo.visible = true;
+          if (t >= 1) {
+            ejectState = "idle";
+            ejectDoneSent = false;
+            photo.visible = false;
+            setPhotoPose(slotStart, 0);
+            callbacksRef.current.onRetractDone?.();
+            callbacksRef.current.onStatusChange?.("Ready");
+            resolveRetracts();
           }
+          return;
         }
-      } else if (retractStartMsRef.current !== null) {
-        const retractElapsed = Math.max(0, (now - retractStartMsRef.current) / 1000);
-        const retractT = smoothstep(0, PHOTO.retractEnd, retractElapsed);
-        const retractY = mix(topDockAnchor.y, topStartAnchor.y, retractT);
-        const retractZ = mix(topDockAnchor.z, topStartAnchor.z, retractT);
-        setPhotoPose(retractY, retractZ, 1 - retractT);
-        photo.visible = true;
-
-        if (retractT >= 1) {
-          photo.visible = false;
-          retractStartMsRef.current = null;
-          captureStartMsRef.current = null;
-          photoDockedRef.current = false;
-          setPhotoPose(topStartAnchor.y, topStartAnchor.z, 0);
-          callbacksRef.current.onRetractDone?.();
+        if (ejectState === "done") {
+          debugState.ejectState = "done";
+          debugState.ejectT = 1;
+          setPhotoPose(slotDock, 1);
+          photo.visible = true;
+          return;
         }
-      } else if (phaseRef.current === "connected" || photoDockedRef.current) {
-        setPhotoPose(topDockAnchor.y, topDockAnchor.z, 1);
-        photo.visible = true;
-      } else {
-        setPhotoPose(topStartAnchor.y, topStartAnchor.z, 0);
+        debugState.ejectState = "idle";
+        debugState.ejectT = 0;
+        setPhotoPose(slotStart, 0);
         photo.visible = false;
-      }
+      };
 
-      shutterButton.position.y = mix(1.2, 1.168, shutterPress);
+      const tick = () => {
+        const now = performance.now();
+        const t = Number.isFinite(timelineRef.current) ? timelineRef.current : 0;
 
-      lensCenter.getWorldPosition(lensWorld);
-      lensEdge.getWorldPosition(lensEdgeWorld);
-      projectedCenter.copy(lensWorld).project(camera);
-      projectedEdge.copy(lensEdgeWorld).project(camera);
+        if (hasGlb && loadedModel) {
+          const worldBox = new THREE.Box3().setFromObject(loadedModel);
+          if (!worldBox.isEmpty()) {
+            camera.fov = FRAMING.heroFov;
+            camera.updateProjectionMatrix();
+            const fit = computeFitDistance(worldBox, camera, HERO_FIT);
+            const size = worldBox.getSize(new THREE.Vector3());
+            const center = worldBox.getCenter(new THREE.Vector3());
+            const localMax = Math.max(size.x, size.y, size.z);
+            heroTarget.copy(center);
+            heroPos.copy(center).add(new THREE.Vector3(localMax * 0.18, localMax * 0.12, fit * 0.95));
+          }
 
-      callbacksRef.current.onLensProject?.({
-        x: (projectedCenter.x * 0.5 + 0.5) * mount.clientWidth,
-        y: (-projectedCenter.y * 0.5 + 0.5) * mount.clientHeight,
-        r: Math.hypot(
-          (projectedEdge.x - projectedCenter.x) * 0.5 * mount.clientWidth,
-          (-projectedEdge.y + projectedCenter.y) * 0.5 * mount.clientHeight
-        ),
-        visible: projectedCenter.z > -1 && projectedCenter.z < 1,
-      });
+          lensCenter.getWorldPosition(lensWorld);
+          const modelQ = modelRoot.getWorldQuaternion(new THREE.Quaternion());
+          const lensN = new THREE.Vector3(0, 0, 1).applyQuaternion(modelQ).normalize();
+          const lensR = new THREE.Vector3(1, 0, 0).applyQuaternion(modelQ).normalize();
+          const lensU = new THREE.Vector3(0, 1, 0).applyQuaternion(modelQ).normalize();
+          macroTarget.copy(lensWorld).addScaledVector(lensN, -0.3).addScaledVector(lensU, 0.012);
+          macroPos.copy(lensWorld).addScaledVector(lensN, FRAMING.macroDistance).addScaledVector(lensR, 0.015).addScaledVector(lensU, 0.015);
 
-      photoAnchorWorld
-        .copy(lensWorld)
-        .addScaledVector(lensUp, 0.25)
-        .addScaledVector(lensRight, 0.35)
-        .addScaledVector(lensNormal, 0.04);
-      projectedPhotoAnchor.copy(photoAnchorWorld).project(camera);
-      callbacksRef.current.onCardAnchorPx?.({
-        x: (projectedPhotoAnchor.x * 0.5 + 0.5) * mount.clientWidth,
-        y: (-projectedPhotoAnchor.y * 0.5 + 0.5) * mount.clientHeight,
-        visible: projectedPhotoAnchor.z > -1 && projectedPhotoAnchor.z < 1,
-      });
+          const bodyReveal = smoothstep(BEATS.revealStart, BEATS.revealEnd, t);
+          const dollyBlend = smoothstep(BEATS.revealEnd, BEATS.readyAt, t);
+          midPos.lerpVectors(macroPos, heroPos, bodyReveal * 0.64);
+          camera.position.lerpVectors(midPos, heroPos, dollyBlend);
+          midTarget.lerpVectors(macroTarget, heroTarget, bodyReveal * 0.72);
+          lookTarget.lerpVectors(midTarget, heroTarget, dollyBlend);
+          const settleT = smoothstep(BEATS.revealEnd, BEATS.readyAt, t);
+          camera.position.y += Math.sin(settleT * Math.PI * 2.2) * (1 - settleT) * 0.008;
+          camera.fov = mix(FRAMING.macroFov, FRAMING.heroFov, clamp01(bodyReveal * 0.76 + dollyBlend * 0.24));
+          camera.updateProjectionMatrix();
+          camera.lookAt(lookTarget);
 
-      renderer.toneMappingExposure = 0.96 + closeupBlend * 0.16;
-      renderer.render(scene, camera);
-      raf = window.requestAnimationFrame(tick);
-    };
-
-    raf = window.requestAnimationFrame(tick);
-
-    return () => {
-      window.cancelAnimationFrame(raf);
-      window.removeEventListener("resize", onResize);
-      dom.removeEventListener("pointermove", onPointerMove);
-      dom.removeEventListener("pointerleave", onPointerLeave);
-      dom.removeEventListener("pointerdown", onPointerDown);
-      dom.style.cursor = "default";
-      callbacksRef.current.onPointerHoverChange?.(false);
-
-      scene.traverse((node) => {
-        const mesh = node as THREE.Mesh;
-        if (mesh.geometry) mesh.geometry.dispose();
-        const holder = mesh as { material?: THREE.Material | THREE.Material[] };
-        if (!holder.material) return;
-        if (Array.isArray(holder.material)) {
-          holder.material.forEach((material) => material.dispose());
+          if (!readyNotified && t >= BEATS.readyAt) {
+            readyNotified = true;
+            heroSettleFromPos.copy(camera.position);
+            heroSettleFromLook.copy(lookTarget);
+            heroSettleToPos.copy(heroPos);
+            heroSettleToLook.copy(heroTarget);
+            heroSettleStartMs = now;
+            heroSettleActive = true;
+            callbacksRef.current.onReady?.();
+            callbacksRef.current.onStatusChange?.("Ready");
+          }
+          if (heroSettleActive && phaseRef.current === "ready") {
+            const s = clamp01((now - heroSettleStartMs) / HERO_SETTLE_MS);
+            const eased = easeOutCubic(s);
+            camera.position.lerpVectors(heroSettleFromPos, heroSettleToPos, eased);
+            heroSettleLook.lerpVectors(heroSettleFromLook, heroSettleToLook, eased);
+            camera.lookAt(heroSettleLook);
+            if (s >= 1) heroSettleActive = false;
+          }
         } else {
-          holder.material.dispose();
+          camera.position.set(0, 0.14, 2.2);
+          camera.lookAt(0, 0, 0);
         }
-      });
-      if (apertureTexture) apertureTexture.dispose();
-      if (shellRoughnessTexture) shellRoughnessTexture.dispose();
 
-      renderer.dispose();
-      if (renderer.domElement.parentElement === mount) {
-        mount.removeChild(renderer.domElement);
-      }
-    };
-  }, []);
+        updatePhoto(now);
+        renderer.render(scene, camera);
 
-  return <div ref={mountRef} className="absolute inset-0 h-full w-full" />;
-}
+        lensCenter.getWorldPosition(lensWorld);
+        lensEdge.getWorldPosition(lensEdgeWorld);
+        projectedCenter.copy(lensWorld).project(camera);
+        projectedEdge.copy(lensEdgeWorld).project(camera);
+        const rect = renderer.domElement.getBoundingClientRect();
+        const lensX = rect.left + (projectedCenter.x * 0.5 + 0.5) * rect.width;
+        const lensY = rect.top + (-projectedCenter.y * 0.5 + 0.5) * rect.height;
+        callbacksRef.current.onLensProject?.({
+          x: lensX,
+          y: lensY,
+          r: Math.hypot(
+            (projectedEdge.x - projectedCenter.x) * 0.5 * rect.width,
+            (-projectedEdge.y + projectedCenter.y) * 0.5 * rect.height
+          ),
+          visible:
+            projectedCenter.z > -1 &&
+            projectedCenter.z < 1 &&
+            lensX >= rect.left &&
+            lensX <= rect.right &&
+            lensY >= rect.top &&
+            lensY <= rect.bottom,
+        });
+
+        cardAnchor.getWorldPosition(cardWorld);
+        projectedCard.copy(cardWorld).project(camera);
+        const cardX = rect.left + (projectedCard.x * 0.5 + 0.5) * rect.width;
+        const cardY = rect.top + (-projectedCard.y * 0.5 + 0.5) * rect.height;
+        const anchorVisible = projectedCard.z > -1 && projectedCard.z < 1;
+        const anchorFinite = Number.isFinite(cardX) && Number.isFinite(cardY);
+        debugState.cardAnchorProjected = anchorFinite;
+        if (anchorFinite) debugState.anchorPx = { x: cardX, y: cardY, visible: anchorVisible };
+        callbacksRef.current.onCardAnchorPx?.({ x: cardX, y: cardY, visible: anchorVisible });
+
+        emitDebug();
+        raf = window.requestAnimationFrame(tick);
+      };
+
+      raf = window.requestAnimationFrame(tick);
+
+      return () => {
+        triggerFnRef.current = null;
+        triggerFlashOnlyFnRef.current = null;
+        putBackFnRef.current = null;
+        setInteractionFnRef.current = null;
+        window.cancelAnimationFrame(raf);
+        window.removeEventListener("resize", onResize);
+        dom.removeEventListener("pointermove", onPointerMove);
+        dom.removeEventListener("pointerleave", onPointerLeave);
+        dom.removeEventListener("pointerdown", onPointerDown);
+        dom.removeEventListener("webglcontextlost", onContextLost);
+        dom.removeEventListener("webglcontextrestored", onContextRestored);
+        dom.style.cursor = "default";
+        callbacksRef.current.onPointerHoverChange?.(false);
+
+        const materials = new Set<THREE.Material>();
+        scene.traverse((node) => {
+          if (!(node instanceof THREE.Mesh)) return;
+          node.geometry.dispose();
+          if (Array.isArray(node.material)) node.material.forEach((m) => materials.add(m));
+          else materials.add(node.material);
+        });
+        materials.forEach((m) => m.dispose());
+        envRT.dispose();
+        pmrem.dispose();
+
+        renderer.dispose();
+        if (renderer.domElement.parentElement === mount) {
+          mount.removeChild(renderer.domElement);
+        }
+      };
+    }, []);
+
+    return <div ref={mountRef} className="absolute inset-0 h-full w-full" />;
+  }
+);
+
+export default PolaroidCameraAssembly3D;

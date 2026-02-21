@@ -196,3 +196,247 @@ body {
 .chv-hud-fade-in {
   animation: chv-hud-fade 0.45s ease-out 0.9s forwards;
 }
+
+@keyframes chv-const-line-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes chv-const-point-in {
+  from {
+    opacity: 0;
+    transform: scale(0.35);
+    transform-origin: center;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    transform-origin: center;
+  }
+}
+
+.chv-spotlight-mask {
+  --mx: 50%;
+  --my: 50%;
+  --r: 70px;
+  --inner: calc(var(--r) * 0.58);
+  --mid: calc(var(--r) * 0.82);
+  -webkit-mask-image: radial-gradient(
+    circle at var(--mx) var(--my),
+    rgba(0, 0, 0, 1) 0,
+    rgba(0, 0, 0, 1) var(--inner),
+    rgba(0, 0, 0, 0.76) var(--mid),
+    rgba(0, 0, 0, 0) var(--r)
+  );
+  mask-image: radial-gradient(
+    circle at var(--mx) var(--my),
+    rgba(0, 0, 0, 1) 0,
+    rgba(0, 0, 0, 1) var(--inner),
+    rgba(0, 0, 0, 0.76) var(--mid),
+    rgba(0, 0, 0, 0) var(--r)
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+@keyframes chv-type-cursor-blink {
+  0%,
+  44% {
+    opacity: 1;
+  }
+  50%,
+  92% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.chv-type-cursor {
+  margin-left: 0.04em;
+  color: #fff;
+  animation: chv-type-cursor-blink 0.85s step-end infinite;
+}
+
+.chv-type-cursor-done {
+  opacity: 0.62;
+}
+
+.chv-home-cursorless,
+.chv-home-cursorless * {
+  cursor: none !important;
+}
+
+.home-spotlight-mask-bg {
+  --bgx: 50vw;
+  --bgy: 50vh;
+  --bgr: 0px;
+  -webkit-mask-image: radial-gradient(
+    circle var(--bgr) at var(--bgx) var(--bgy),
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 0.9) 55%,
+    rgba(0, 0, 0, 0) 75%
+  );
+  mask-image: radial-gradient(
+    circle var(--bgr) at var(--bgx) var(--bgy),
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 0.9) 55%,
+    rgba(0, 0, 0, 0) 75%
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.home-bg-rainbow {
+  will-change: mask-image, -webkit-mask-image, transform;
+}
+
+.home-spotlight-mask-bg {
+  --bgx: 50vw;
+  --bgy: 50vh;
+  --bgr: 0px;
+  -webkit-mask-image: radial-gradient(
+    circle var(--bgr) at var(--bgx) var(--bgy),
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 1) 88%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: radial-gradient(
+    circle var(--bgr) at var(--bgx) var(--bgy),
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 1) 88%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.home-cursor--idle {
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
+.home-cursor--text {
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 18px rgba(255, 255, 255, 0.35);
+}
+
+.home-cursor--bg {
+  width: 68px;
+  height: 68px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.24);
+}
+
+.home-cursor-glow--idle {
+  width: 14px;
+  height: 14px;
+  opacity: 0.4;
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.18);
+}
+
+.home-cursor-glow--text {
+  width: 32px;
+  height: 32px;
+  opacity: 0.5;
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.24);
+}
+
+.home-cursor-glow--bg {
+  width: 104px;
+  height: 104px;
+  opacity: 0.56;
+  box-shadow: 0 0 34px rgba(255, 255, 255, 0.28);
+}
+
+.home-spotlight-mask-bg {
+  --bgx: 50vw;
+  --bgy: 50vh;
+  --bgr: 0px;
+  -webkit-mask-image: radial-gradient(
+    circle var(--bgr) at var(--bgx) var(--bgy),
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 1) 97%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: radial-gradient(
+    circle var(--bgr) at var(--bgx) var(--bgy),
+    rgba(0, 0, 0, 1) 0%,
+    rgba(0, 0, 0, 1) 97%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+@keyframes homeBlink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.25;
+  }
+}
+
+.home-blink {
+  animation: homeBlink 0.8s steps(1, end) infinite;
+}
+
+.home-cursor-inner--idle {
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
+.home-cursor-inner--text {
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 18px rgba(255, 255, 255, 0.35);
+}
+
+.home-cursor-inner--bg {
+  width: 68px;
+  height: 68px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.24);
+}
+
+.home-cursor-glow--idle {
+  width: 16px;
+  height: 16px;
+  opacity: 0.4;
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.18);
+}
+
+.home-cursor-glow--text {
+  width: 34px;
+  height: 34px;
+  opacity: 0.46;
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.24);
+}
+
+.home-cursor-glow--bg {
+  width: 116px;
+  height: 116px;
+  opacity: 0.56;
+  box-shadow: 0 0 34px rgba(255, 255, 255, 0.28);
+}

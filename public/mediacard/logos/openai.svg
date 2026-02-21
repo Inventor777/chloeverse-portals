@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" role="img" aria-labelledby="title">
+  <title>OpenAI</title>
+  <rect width="320" height="96" rx="14" fill="#ffffff"/>
+  <g transform="translate(62 48)" fill="none" stroke="#111111" stroke-width="4" stroke-linecap="round">
+    <path d="M0 -18c9 -16 34 -16 43 0"/>
+    <path d="M22 22c-18 0 -30 -19 -22 -35"/>
+    <path d="M22 22c18 0 30 -19 22 -35"/>
+    <path d="M43 0c15 8 15 32 0 40"/>
+    <path d="M0 0c-15 8 -15 32 0 40"/>
+    <path d="M0 40c9 16 34 16 43 0"/>
+  </g>
+  <text x="226" y="59" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" font-weight="700" fill="#111111">OpenAI</text>
+</svg>

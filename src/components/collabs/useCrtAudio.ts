@@ -213,42 +213,45 @@ export function useCrtAudio() {
   const scheduleTvBoot = useCallback(
     (rig: AudioRig) => {
       const now = rig.ctx.currentTime + 0.004;
-      playClickAt(rig.ctx, rig.volumeGain, now, 0.065);
+      playClickAt(rig.ctx, rig.volumeGain, now, 0.078);
 
       playNoiseBurst(rig.ctx, rig.volumeGain, {
-        startAt: now + 0.03,
-        duration: 1.72,
-        peak: 0.24,
-        attack: 0.2,
-        sustain: 0.046,
-        release: 0.82,
-        filterType: "highpass",
-        frequency: 360,
-      });
-
-      playNoiseBurst(rig.ctx, rig.volumeGain, {
-        startAt: now + 0.58,
-        duration: 0.36,
-        peak: 0.176,
-        attack: 0.05,
-        sustain: 0.034,
-        release: 0.2,
+        startAt: now + 0.012,
+        duration: 0.48,
+        peak: 0.34,
+        attack: 0.016,
+        sustain: 0.092,
+        release: 0.21,
         filterType: "bandpass",
-        frequency: 980,
-        q: 6,
-        frequencySweepTo: 2900,
-        sweepAt: 0.15,
+        frequency: 1180,
+        q: 1.2,
+        frequencySweepTo: 4100,
+        sweepAt: 0.16,
       });
 
       playNoiseBurst(rig.ctx, rig.volumeGain, {
-        startAt: now + 1.02,
-        duration: 0.44,
-        peak: 0.112,
-        attack: 0.04,
-        sustain: 0.026,
-        release: 0.22,
+        startAt: now + 0.07,
+        duration: 0.34,
+        peak: 0.19,
+        attack: 0.014,
+        sustain: 0.05,
+        release: 0.18,
         filterType: "highpass",
-        frequency: 1500,
+        frequency: 560,
+      });
+
+      playNoiseBurst(rig.ctx, rig.volumeGain, {
+        startAt: now + 0.16,
+        duration: 0.26,
+        peak: 0.17,
+        attack: 0.016,
+        sustain: 0.036,
+        release: 0.12,
+        filterType: "bandpass",
+        frequency: 1650,
+        q: 4.8,
+        frequencySweepTo: 2860,
+        sweepAt: 0.1,
       });
     },
     [playClickAt, playNoiseBurst]

@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { VideoItem } from "@/lib/portalData";
 
-import { CrtTelevision } from "./CrtTelevision";
+import { CrtScreen } from "./CrtScreen";
+import { RetroTv3D } from "./RetroTv3D";
 import { RemoteControl } from "./RemoteControl";
 import styles from "./CollabsExperience.module.css";
 import type { BootStage, CollabChannel, LedMode } from "./types";
@@ -83,8 +84,6 @@ export function CollabsExperience({ videos }: CollabsExperienceProps) {
   const osdTimerRef = useRef<number | null>(null);
   const ledTimerRef = useRef<number | null>(null);
   const reloadStaticPlayedRef = useRef(false);
-  const reloadStaticAttemptingRef = useRef(false);
-  const reloadStaticFallbackBoundRef = useRef(false);
   const audio = useCrtAudio();
 
   const channels = useMemo(() => normalizeVideoChannels(videos), [videos]);
@@ -124,52 +123,25 @@ export function CollabsExperience({ videos }: CollabsExperienceProps) {
     };
   }, [audio]);
 
-  useEffect(() => {
-    let disposed = false;
-
-    const playReloadStatic = async () => {
-      if (reloadStaticPlayedRef.current || reloadStaticAttemptingRef.current) return reloadStaticPlayedRef.current;
-      reloadStaticAttemptingRef.current = true;
-
-      let unlocked = false;
-      try {
-        unlocked = await audio.ensureUnlocked();
-      } catch {
-        unlocked = false;
-      } finally {
-        reloadStaticAttemptingRef.current = false;
-      }
-
-      if (!unlocked || reloadStaticPlayedRef.current) return false;
-      reloadStaticPlayedRef.current = true;
-      audio.playTvBoot();
-      return true;
-    };
-
-    const onFirstGesture = () => {
-      void playReloadStatic();
-    };
-
-    const bindFallbackGesture = () => {
-      if (reloadStaticPlayedRef.current || reloadStaticFallbackBoundRef.current) return;
-      reloadStaticFallbackBoundRef.current = true;
-      window.addEventListener("pointerdown", onFirstGesture, { once: true, capture: true });
-      window.addEventListener("keydown", onFirstGesture, { once: true, capture: true });
-    };
-
-    void (async () => {
-      const played = await playReloadStatic();
-      if (!played && !disposed) bindFallbackGesture();
-    })();
-
-    return () => {
-      disposed = true;
-      if (!reloadStaticPlayedRef.current) {
-        window.removeEventListener("pointerdown", onFirstGesture, true);
-        window.removeEventListener("keydown", onFirstGesture, true);
-      }
-    };
+  const playReloadStaticOnce = useCallback(() => {
+    if (reloadStaticPlayedRef.current) return;
+    reloadStaticPlayedRef.current = true;
+    void audio.ensureUnlocked();
+    audio.playTvBoot();
   }, [audio]);
+
+  useEffect(() => {
+    const onFirstGesture = () => {
+      playReloadStaticOnce();
+    };
+
+    window.addEventListener("pointerdown", onFirstGesture, { once: true, capture: true });
+    window.addEventListener("keydown", onFirstGesture, { once: true, capture: true });
+    return () => {
+      window.removeEventListener("pointerdown", onFirstGesture, true);
+      window.removeEventListener("keydown", onFirstGesture, true);
+    };
+  }, [playReloadStaticOnce]);
 
   const clearBootTimers = useCallback(() => {
     bootTimersRef.current.forEach((id) => window.clearTimeout(id));
@@ -378,7 +350,7 @@ export function CollabsExperience({ videos }: CollabsExperienceProps) {
     if (!remoteOn) {
       setRemoteOn(true);
       pulseLed(260);
-      audio.playTvBoot();
+      playReloadStaticOnce();
       startBoot();
       return;
     }
@@ -388,9 +360,9 @@ export function CollabsExperience({ videos }: CollabsExperienceProps) {
       return;
     }
 
-    audio.playTvBoot();
+    playReloadStaticOnce();
     startBoot();
-  }, [audio, bootStage, hasPressedPower, powerEverythingOff, pulseLed, remoteOn, startBoot, tvOn]);
+  }, [audio, bootStage, hasPressedPower, playReloadStaticOnce, powerEverythingOff, pulseLed, remoteOn, startBoot, tvOn]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -458,28 +430,30 @@ export function CollabsExperience({ videos }: CollabsExperienceProps) {
       <div className={styles.floorBounce} aria-hidden="true" />
       <div className={styles.sceneGrain} aria-hidden="true" />
 
-      {pageIntroStage === "settle" || pageIntroStage === "done" ? (
-        <div className={styles.hudTopLeft}>
-          <div className={`${styles.pressPowerPrompt} ${hasPressedPower ? styles.powerPromptDismissed : ""}`}>
-            PRESS POWER TO WAKE
-          </div>
-        </div>
-      ) : null}
-
       <div className={styles.stageObjects}>
         <div className={styles.tvHeroGlow} aria-hidden="true" />
 
         <div className={styles.televisionWrap}>
-          <CrtTelevision
-            channel={currentChannel}
-            tvOn={tvOn}
-            bootStage={bootStage}
-            glitchActive={tvOn ? glitchActive : false}
-            glitchPulse={glitchPulse}
-            osdVisible={tvOn ? osdVisible : false}
-            osdPulse={osdPulse}
-            reducedMotion={prefersReducedMotion}
-          />
+          {pageIntroStage === "settle" || pageIntroStage === "done" ? (
+            <div className={styles.tvPromptAnchor}>
+              <div className={`${styles.pressPowerPrompt} ${hasPressedPower ? styles.powerPromptDismissed : ""}`}>
+                PRESS POWER TO WAKE
+              </div>
+            </div>
+          ) : null}
+
+          <RetroTv3D tvOn={tvOn} bootStage={bootStage} reducedMotion={prefersReducedMotion}>
+            <CrtScreen
+              channel={currentChannel}
+              tvOn={tvOn}
+              bootStage={bootStage}
+              glitchActive={tvOn ? glitchActive : false}
+              glitchPulse={glitchPulse}
+              osdVisible={tvOn ? osdVisible : false}
+              osdPulse={osdPulse}
+              reducedMotion={prefersReducedMotion}
+            />
+          </RetroTv3D>
         </div>
 
         <div className={styles.remoteAreaGlow} aria-hidden="true" />

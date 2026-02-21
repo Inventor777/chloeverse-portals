@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" role="img" aria-labelledby="title">
+  <title>Adobe</title>
+  <rect width="320" height="96" rx="14" fill="#ffffff"/>
+  <path d="M20 76L68 20h34L54 76H20zm118-56h34l48 56h-34l-48-56z" fill="#111111"/>
+  <text x="254" y="60" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#111111">Adobe</text>
+</svg>

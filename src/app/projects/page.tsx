@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneShell } from "@/components/SceneShell";
 import { ReturnButton } from "@/components/ReturnButton";
 import { ProjectsFieldWebGL } from "@/components/ProjectsFieldWebGL";
+import { IphoneHeroGLB } from "@/components/projects/IphoneHeroGLB";
 import { projectsVideos } from "@/lib/portalData";
 
 type ReelItem = {
@@ -23,6 +23,8 @@ type ProjectVideoInput = {
   embedUrl?: string;
   mp4Url?: string;
 };
+
+const PIXEL_EPSILON = 0.5;
 
 function hasDevPlaceholderTone(value?: string) {
   if (!value) return false;
@@ -50,7 +52,15 @@ function normalizeProjectItem(item: ProjectVideoInput, index: number): ReelItem 
   };
 }
 
-function PhoneReels({ items }: { items: ReelItem[] }) {
+function PhoneReels({
+  items,
+  interactive,
+  className,
+}: {
+  items: ReelItem[];
+  interactive: boolean;
+  className?: string;
+}) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
   const [active, setActive] = useState(0);
@@ -86,10 +96,11 @@ function PhoneReels({ items }: { items: ReelItem[] }) {
   }, [active]);
 
   return (
-    <div className="absolute inset-[18px] overflow-hidden rounded-[2.75rem]">
+    <div className={`relative h-full w-full overflow-hidden bg-black ${className ?? ""}`.trim()}>
       <div
         ref={scrollerRef}
         className="chv-hide-scrollbar h-full w-full overflow-y-auto overscroll-contain snap-y snap-mandatory bg-black"
+        style={{ pointerEvents: interactive ? "auto" : "none", touchAction: interactive ? "pan-y" : "none" }}
       >
         {items.map((item, i) => (
           <section key={item.id} className="relative h-full w-full snap-start">
@@ -119,22 +130,22 @@ function PhoneReels({ items }: { items: ReelItem[] }) {
                 <div className="relative h-full w-full chv-poster">
                   <div className="absolute inset-0 grid place-items-center">
                     <div className="text-center">
-                      <div className="text-[11px] tracking-[0.62em] text-white/55">TRANSMISSION QUEUED</div>
+                      <div className="text-[11px] tracking-[0.58em] text-white/58">TRANSMISSION QUEUED</div>
                       <div className="mt-3 text-sm font-medium text-white/88">Signal pending.</div>
-                      <div className="mt-2 text-xs text-white/48">Carrier lock not established.</div>
+                      <div className="mt-2 text-xs text-white/46">Awaiting channel lock.</div>
                     </div>
                   </div>
                 </div>
               )}
 
-              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(255,255,255,0.12),rgba(0,0,0,0.88)_72%)] opacity-60" />
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(255,255,255,0.12),rgba(0,0,0,0.9)_72%)] opacity-60" />
             </div>
 
             <div className="pointer-events-none absolute bottom-0 left-0 right-0 p-5">
-              <div className="rounded-2xl border border-white/10 bg-black/38 px-4 py-3 backdrop-blur-xl shadow-[0_30px_80px_rgba(0,0,0,0.72)]">
+              <div className="rounded-2xl border border-white/10 bg-black/42 px-4 py-3 backdrop-blur-xl shadow-[0_30px_80px_rgba(0,0,0,0.72)]">
                 <div className="text-sm font-medium tracking-tight text-white/92">{item.title}</div>
                 {item.subtitle ? <div className="mt-1 text-xs text-white/64">{item.subtitle}</div> : null}
-                <div className="mt-2 text-[11px] text-white/44">{i === active ? "Signal stream active." : "\u00A0"}</div>
+                <div className="mt-2 text-[11px] text-white/44">{i === active ? "Signal stream active." : "\u00a0"}</div>
               </div>
             </div>
           </section>
@@ -145,8 +156,12 @@ function PhoneReels({ items }: { items: ReelItem[] }) {
 }
 
 export default function ProjectsPage() {
-  const [seq, setSeq] = useState<"hold" | "drop" | "glide" | "done">("hold");
-  const [impactPulse, setImpactPulse] = useState(0);
+  const [mounted, setMounted] = useState(false);
+  const [showPhone, setShowPhone] = useState(false);
+  const [debug, setDebug] = useState(false);
+  const [screenRect, setScreenRect] = useState<{ left: number; top: number; width: number; height: number; radius: number } | null>(null);
+  const screenOverlayRef = useRef<HTMLDivElement | null>(null);
+  const screenBezelRef = useRef<HTMLDivElement | null>(null);
 
   const items = useMemo(
     () => (projectsVideos ?? []).map((item, index) => normalizeProjectItem(item, index)),
@@ -154,176 +169,140 @@ export default function ProjectsPage() {
   );
 
   useEffect(() => {
-    const t = window.setTimeout(() => setSeq("drop"), 750);
-    return () => window.clearTimeout(t);
+    const bootTimer = window.setTimeout(() => {
+      setMounted(true);
+      setDebug(new URLSearchParams(window.location.search).has("debug"));
+    }, 0);
+    const timer = window.setTimeout(() => setShowPhone(true), 1000);
+    return () => {
+      window.clearTimeout(bootTimer);
+      window.clearTimeout(timer);
+    };
   }, []);
 
-  const handlePhoneAnimationComplete = () => {
-    if (seq === "drop") {
-      setImpactPulse((v) => v + 1);
-      setSeq("glide");
-    } else if (seq === "glide") {
-      setSeq("done");
-    }
-  };
+  useEffect(() => {
+    const prevDocOverflow = document.documentElement.style.overflow;
+    const prevBodyOverflow = document.body.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prevDocOverflow;
+      document.body.style.overflow = prevBodyOverflow;
+    };
+  }, []);
 
-  const phoneVariants = {
-    hold: {
-      opacity: 0,
-      x: 0,
-      y: 0,
-      z: -1400,
-      scale: 0.22,
-      rotateX: 4,
-      rotateY: 0,
-      rotateZ: 0,
-      pointerEvents: "none",
-    },
-    drop: {
-      opacity: [0, 1],
-      x: 0,
-      y: [-820, 0],
-      z: -1400,
-      scale: 0.22,
-      rotateX: 4,
-      rotateY: 0,
-      rotateZ: 0,
-      pointerEvents: "auto",
-      transition: {
-        opacity: { duration: 0.12, ease: "easeOut" },
-        y: { type: "tween", duration: 1.55, ease: "easeOut" },
-      },
-    },
-    glide: {
-      opacity: 1,
-      x: 0,
-      y: 0,
-      z: [-1400, 0],
-      scale: [0.22, 1],
-      rotateX: [4, 1.5],
-      rotateY: 0,
-      rotateZ: 0,
-      pointerEvents: "auto",
-      transition: { type: "tween", duration: 4.2, ease: "easeInOut" },
-    },
-    done: {
-      opacity: 1,
-      x: 0,
-      y: 0,
-      z: 0,
-      scale: 1,
-      rotateX: 1.5,
-      rotateY: 0,
-      rotateZ: 0,
-      pointerEvents: "auto",
-    },
-  };
+  const handleScreenRect = useCallback((next: { left: number; top: number; width: number; height: number; radius: number }) => {
+    setScreenRect((prev) => {
+      if (!prev) return next;
+      return (
+        Math.abs(prev.left - next.left) > PIXEL_EPSILON ||
+        Math.abs(prev.top - next.top) > PIXEL_EPSILON ||
+        Math.abs(prev.width - next.width) > PIXEL_EPSILON ||
+        Math.abs(prev.height - next.height) > PIXEL_EPSILON ||
+        Math.abs(prev.radius - next.radius) > PIXEL_EPSILON
+      )
+        ? next
+        : prev;
+    });
+  }, []);
 
   return (
-    <div className="relative h-screen overflow-hidden bg-black supports-[height:100svh]:h-[100svh]">
+    <main className="relative h-screen overflow-hidden overscroll-none bg-black supports-[height:100svh]:h-[100svh]">
       <ReturnButton label="Click to stay in the Chloeverse" />
 
-      <SceneShell
-        title="PROJECTS"
-        subtitle="NIGHT-SIGNAL ARCHIVE ON THE RUNWAY."
-        showStars={false}
-        showIntroFade={false}
-        overlayPreset="runway"
-        background={<ProjectsFieldWebGL />}
-        frameClassName="h-screen supports-[height:100svh]:h-[100svh] max-w-none px-5 pb-0 pt-8 md:px-10 md:pt-10 flex flex-col overflow-hidden"
-        headerClassName="max-w-lg"
-        titleClassName="text-[1.45rem] md:text-[2rem] tracking-[0.28em] font-medium"
-        subtitleClassName="mt-3 text-xs md:text-sm uppercase tracking-[0.08em] text-white/62"
-        contentClassName="mt-6 md:mt-8 flex-1 overflow-hidden flex items-end justify-center"
-      >
-        <div className="relative flex h-full w-full items-end justify-center pb-9 md:pb-14">
-          <motion.div
-            className="pointer-events-none absolute left-1/2 bottom-[6.8%] h-36 w-[540px] -translate-x-1/2 rounded-[999px] bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.52),rgba(0,0,0,0.18)_34%,rgba(0,0,0,0)_76%)]"
-            initial={{ opacity: 0, scale: 0.22, x: 0, y: 16 }}
-            animate={
-              seq === "hold"
-                ? { opacity: 0, scale: 0.22, x: 0, y: 16 }
-                : seq === "drop"
-                  ? { opacity: 0.08, scale: 0.22, x: 0, y: 10 }
-                  : seq === "glide"
-                    ? { opacity: 0.42, scale: 0.94, x: 0, y: 3 }
-                    : { opacity: 0.42, scale: 0.94, x: 0, y: 3 }
-            }
-            transition={
-              seq === "drop"
-                ? { type: "tween", duration: 1.55, ease: "easeOut" }
-                : seq === "glide"
-                  ? { type: "tween", duration: 4.2, ease: "easeInOut" }
-                  : { duration: 0.26, ease: [0.2, 0.82, 0.22, 1] }
-            }
-          />
-
-          <motion.div
-            className="pointer-events-none absolute left-1/2 bottom-[8.5%] h-24 w-[470px] -translate-x-1/2 rounded-[999px] bg-[radial-gradient(ellipse_at_center,rgba(246,164,88,0.2),rgba(0,0,0,0)_72%)] blur-2xl"
-            initial={{ opacity: 0, scale: 0.22, x: 0, y: 12 }}
-            animate={
-              seq === "hold"
-                ? { opacity: 0, scale: 0.22, x: 0, y: 12 }
-                : seq === "drop"
-                  ? { opacity: 0.03, scale: 0.22, x: 0, y: 9 }
-                  : seq === "glide"
-                    ? { opacity: 0.14, scale: 0.94, x: 0, y: 2 }
-                    : { opacity: 0.14, scale: 0.94, x: 0, y: 2 }
-            }
-            transition={
-              seq === "drop"
-                ? { type: "tween", duration: 1.55, ease: "easeOut" }
-                : seq === "glide"
-                  ? { type: "tween", duration: 4.2, ease: "easeInOut" }
-                  : { duration: 0.24, ease: [0.2, 0.82, 0.22, 1] }
-            }
-          />
-
-          {impactPulse > 0 ? (
-            <>
-              <motion.div
-                key={`impact-shadow-${impactPulse}`}
-                className="pointer-events-none absolute left-1/2 bottom-[32.8%] h-6 w-36 -translate-x-1/2 rounded-[999px] bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.16),rgba(0,0,0,0.06)_45%,rgba(0,0,0,0)_80%)]"
-                initial={{ opacity: 0, scale: 0.72, y: 3 }}
-                animate={{ opacity: [0, 0.14, 0.05, 0], scale: [0.72, 1.04, 1.12, 1.18], y: [3, 1, 0, 0] }}
-                transition={{ duration: 0.44, times: [0, 0.3, 0.68, 1], ease: [0.2, 0.82, 0.2, 1] }}
+      <div className="absolute inset-0">
+        <SceneShell
+          title="PROJECTS"
+          subtitle="NIGHT-SIGNAL ARCHIVE IN CELESTIAL SILENCE."
+          showStars={false}
+          showIntroFade={false}
+          overlayPreset="default"
+          background={<ProjectsFieldWebGL mode="celestial" />}
+          frameClassName="h-screen supports-[height:100svh]:h-[100svh] max-w-none px-5 pb-0 pt-8 md:px-10 md:pt-10 flex flex-col overflow-hidden"
+          headerClassName="max-w-lg"
+          titleClassName="text-[1.45rem] md:text-[2rem] tracking-[0.28em] font-medium"
+          subtitleClassName="mt-3 text-xs md:text-sm uppercase tracking-[0.08em] text-white/62"
+          contentClassName="mt-6 md:mt-8 flex-1 overflow-visible flex items-end justify-center"
+        >
+          <div className="relative flex h-full w-full items-end justify-center pb-10 md:pb-14">
+            <div className="relative h-[min(86vh,920px)] w-[min(92vw,520px)]">
+              <div
+                className="pointer-events-none absolute left-1/2 top-1/2 z-[10] h-[72%] w-[88%] -translate-x-1/2 -translate-y-1/2"
+                style={{
+                  background:
+                    "radial-gradient(circle at 50% 45%, rgba(255,255,255,0.10), rgba(255,255,255,0.03) 38%, rgba(0,0,0,0) 70%)",
+                  filter: "blur(2px)",
+                  opacity: showPhone ? 1 : 0,
+                  transition: "opacity 600ms ease",
+                }}
               />
-              <motion.div
-                key={`impact-flash-${impactPulse}`}
-                className="pointer-events-none absolute left-1/2 bottom-[33.2%] h-4 w-20 -translate-x-1/2 rounded-[999px] bg-[radial-gradient(ellipse_at_center,rgba(237,245,255,0.52),rgba(196,214,244,0.1)_48%,rgba(0,0,0,0)_76%)] mix-blend-screen blur-sm"
-                initial={{ opacity: 0, scale: 0.4, y: 2 }}
-                animate={{ opacity: [0, 0.3, 0], scale: [0.4, 1, 1.16], y: [2, 0, 0] }}
-                transition={{ duration: 0.28, ease: [0.2, 0.82, 0.24, 1] }}
-              />
-            </>
-          ) : null}
-
-          <div className="relative [perspective:1600px] [perspective-origin:50%_65%]">
-            <motion.div
-              className="relative h-[720px] w-[360px] md:h-[820px] md:w-[420px]"
-              initial="hold"
-              animate={seq}
-              variants={phoneVariants}
-              onAnimationComplete={handlePhoneAnimationComplete}
-              style={{ transformStyle: "preserve-3d", transformOrigin: "50% 100%" }}
-            >
-              <div className="absolute inset-0 rounded-[3.2rem] overflow-hidden isolation-isolate">
-                <div className="chv-glass-sheen absolute inset-0 rounded-[inherit] border border-white/10 bg-gradient-to-b from-white/12 to-black/45 shadow-[0_60px_120px_rgba(0,0,0,0.8)] backdrop-blur-xl" />
-                <div className="absolute inset-[10px] rounded-[inherit] border border-white/10 bg-black/40" />
-                <div className="absolute left-1/2 top-4 h-3 w-24 -translate-x-1/2 rounded-full border border-white/10 bg-black/70" />
-                <PhoneReels items={items} />
-              </div>
-            </motion.div>
+              <div className="pointer-events-none absolute left-1/2 bottom-[10.5%] z-[11] h-40 w-[92%] -translate-x-1/2 rounded-[999px] bg-[radial-gradient(ellipse_at_center,rgba(228,236,252,0.22),rgba(174,196,235,0.06)_40%,rgba(0,0,0,0)_75%)] opacity-30" />
+              {mounted && showPhone ? (
+                <IphoneHeroGLB
+                  className="z-[20]"
+                  onScreenRect={mounted && debug ? handleScreenRect : undefined}
+                  screenOverlayRef={screenOverlayRef}
+                  screenBezelRef={screenBezelRef}
+                  debug={mounted && debug}
+                />
+              ) : null}
+            </div>
           </div>
-        </div>
-      </SceneShell>
+        </SceneShell>
 
-      <motion.div
-        className="pointer-events-none absolute inset-0 z-[60] bg-black"
-        initial={{ opacity: 1 }}
-        animate={{ opacity: [1, 1, 0] }}
-        transition={{ duration: 0.9, times: [0, 0.44, 1], ease: "easeOut" }}
-      />
-    </div>
+        <div className="absolute inset-0 z-[28]">
+          <div
+            id="projects-screen-bezel"
+            ref={screenBezelRef}
+            className="pointer-events-none absolute left-0 top-0 bg-black/95"
+            style={{
+              left: "0px",
+              top: "0px",
+              width: "0px",
+              height: "0px",
+              opacity: showPhone ? 1 : 0,
+            }}
+          />
+
+          <div
+            id="projects-screen-overlay"
+            ref={screenOverlayRef}
+            className="absolute left-0 top-0 overflow-hidden border border-white/10 bg-black"
+            style={{
+              left: "0px",
+              top: "0px",
+              width: "0px",
+              height: "0px",
+              overflow: "hidden",
+              opacity: showPhone ? 1 : 0,
+              pointerEvents: showPhone ? "auto" : "none",
+              willChange: "left,top,width,height,opacity",
+            }}
+          >
+            <div
+              className="h-full w-full"
+              style={{ filter: "brightness(1) saturate(1)", opacity: 1 }}
+            >
+              <PhoneReels items={items} interactive={showPhone} />
+            </div>
+
+            <div className="pointer-events-none absolute inset-0 shadow-[inset_0_0_22px_rgba(0,0,0,0.38)]" />
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_14%,rgba(255,255,255,0.1),rgba(0,0,0,0)_46%)]" />
+          </div>
+
+          {mounted && debug && screenRect ? (
+            <div
+              className="pointer-events-none absolute border border-cyan-200/60"
+              style={{
+                transform: `translate3d(${screenRect.left}px, ${screenRect.top}px, 0)`,
+                width: screenRect.width,
+                height: screenRect.height,
+                borderRadius: screenRect.radius,
+              }}
+            />
+          ) : null}
+        </div>
+      </div>
+    </main>
   );
 }
