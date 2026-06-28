@@ -1,0 +1,19 @@
+{
+  "redirects": [
+    {
+      "source": "/kairo",
+      "destination": "/",
+      "permanent": false
+    },
+    {
+      "source": "/kairo/",
+      "destination": "/",
+      "permanent": false
+    },
+    {
+      "source": "/kairo/index.html",
+      "destination": "/",
+      "permanent": false
+    }
+  ]
+}
