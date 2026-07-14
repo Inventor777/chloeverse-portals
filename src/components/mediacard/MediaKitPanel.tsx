@@ -64,7 +64,7 @@ function AudiencePanel() {
 
 function MetricsPanel() {
   const metrics: MetricDatum[] = [
-    { label: "Instagram", value: "150K" },
+    { label: "Instagram", value: "160K" },
     { label: "TikTok", value: "160K" },
     { label: "Views", value: "12M monthly" },
     { label: "Engagement", value: "12%" },
@@ -95,8 +95,8 @@ function ServicesPanel() {
       <section className={styles.sectionBlock}>
         <h3 className={styles.sectionTitle}>Brand Partnerships</h3>
         <ul className={styles.sectionList}>
-          <li>Per Video (Posted on one platform): $1,200</li>
-          <li>Cross posted across platforms: $2,000</li>
+          <li>Per Video (Posted on one platform): $3,000</li>
+          <li>Cross posted across platforms: $4,000</li>
           <li>Link in bio per every 7 days: Additional $100</li>
           <li>Whitelisting (per 15 days): Additional $100</li>
           <li>Usage rights (per 30 days): Additional $200</li>

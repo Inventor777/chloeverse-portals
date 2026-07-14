@@ -375,7 +375,7 @@ export const CONTACT_CAROUSEL_ITEMS: ContactCarouselItem[] = [
 export const MEDIACARD_AUDIENCE = ["United States", "Canada", "Australia", "South Korea"] as const;
 
 export const MEDIACARD_METRICS = [
-  { label: "Instagram", value: "150K" },
+  { label: "Instagram", value: "160K" },
   { label: "TikTok", value: "160K" },
   { label: "Views", value: "12M monthly" },
   { label: "Engagement", value: "12%" },
@@ -383,8 +383,8 @@ export const MEDIACARD_METRICS = [
 
 export const MEDIACARD_SERVICES = {
   brandPartnerships: [
-    "Per Video (Posted on one platform): $1,200",
-    "Cross posted across platforms: $2,000",
+    "Per Video (Posted on one platform): $3,000",
+    "Cross posted across platforms: $4,000",
     "Link in bio per every 7 days: Additional $100",
     "Whitelisting (per 15 days): Additional $100",
     "Usage rights (per 30 days): Additional $200",
