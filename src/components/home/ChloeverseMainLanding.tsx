@@ -63,7 +63,7 @@ const MENU_LINKS = [
   { href: "/projects", label: "PROJECTS" },
   { href: "/collabs", label: "COLLABS" },
   { href: "/work", label: "WORK" },
-  { href: "/startup", label: "STARTUP" },
+  { href: "https://trueme.io", label: "STARTUP" },
   { href: "/contact", label: "CONTACT" },
   { href: "/mediacard", label: "MEDIACARD" },
 ] as const;

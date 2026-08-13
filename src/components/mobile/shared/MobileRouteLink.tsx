@@ -50,10 +50,12 @@ function spawnTransitionOverlay(accent: string, label: string) {
 function withViewOverride(href: string): string {
   if (typeof window === "undefined") return href;
   const current = new URL(window.location.href);
+  const next = new URL(href, current.origin);
+  if (next.origin !== current.origin) return next.href;
+
   const view = current.searchParams.get("view");
   if (!view) return href;
 
-  const next = new URL(href, window.location.origin);
   if (!next.searchParams.has("view")) {
     next.searchParams.set("view", view);
   }
@@ -97,6 +99,11 @@ export const MobileRouteLink = forwardRef<HTMLAnchorElement, MobileRouteLinkProp
     const nextHref = withViewOverride(href);
     const delay = reducedMotion ? 0 : 180;
     window.setTimeout(() => {
+      if (new URL(nextHref, window.location.origin).origin !== window.location.origin) {
+        window.location.assign(nextHref);
+        return;
+      }
+
       startTransition(() => {
         router.push(nextHref);
       });

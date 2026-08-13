@@ -29,7 +29,7 @@ export const HOME_PORTALS = [
     mobileEnabled: true,
   },
   {
-    href: "/startup",
+    href: "https://trueme.io",
     label: "STARTUP",
     displayTitle: "what's launching next",
     subtitle: "teaser, waitlist, reveal",
